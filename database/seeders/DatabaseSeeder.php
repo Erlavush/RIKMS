@@ -30,6 +30,14 @@ class DatabaseSeeder extends Seeder
             'agency_id' => $agency->id,
         ]);
 
+        $pentestAgent = User::create([
+        'name' => 'Pentest Agent',
+        'email' => 'pentest-agent@example.test',
+        'password' => Hash::make('password'),
+        'role' => 'agency_admin',
+        'agency_id' => $agency->id,
+    ]);
+
         $this->seedSdgs();
 
         $samples = [
