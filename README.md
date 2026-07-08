@@ -1,6 +1,6 @@
-# RIKMS
+# RIKMS-copy
 
-RIKMS is a Laravel 12 prototype for a research and innovation knowledge management system. It includes a dashboard, repository browsing, an upload wizard, mocked AI metadata extraction, SDG tagging, access control, review flows, submission tracking, access requests, and placeholder admin pages.
+RIKMS-copy is a public copy of a Laravel 12 prototype for a research and innovation knowledge management system. It includes a dashboard, repository browsing, an upload wizard, mocked AI metadata extraction, SDG tagging, access control, review flows, submission tracking, access requests, and placeholder admin pages.
 
 ## Tech Stack
 
