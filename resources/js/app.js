@@ -60,9 +60,11 @@ document.querySelectorAll('[data-sdg-form]').forEach((form) => {
         input.addEventListener('change', () => syncSdgButton(form));
     });
 
-    form.querySelector('[data-apply-sdg]')?.addEventListener('click', () => {
+    form.querySelector('[data-apply-sdg]')?.addEventListener('click', (e) => {
+        const suggested = JSON.parse(e.currentTarget.getAttribute('data-apply-sdg') || '["9", "16", "8"]');
+        const stringified = suggested.map(val => String(val));
         form.querySelectorAll('[data-sdg-input]').forEach((input) => {
-            input.checked = ['9', '16', '8'].includes(input.value);
+            input.checked = stringified.includes(String(input.value));
         });
         syncSdgButton(form);
     });
@@ -152,9 +154,10 @@ document.querySelectorAll('[data-financial-form]').forEach((form) => {
 });
 
 document.querySelectorAll('[data-apply-pap]').forEach((button) => {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (e) => {
+        const suggested = JSON.parse(e.currentTarget.getAttribute('data-apply-pap') || '["Research and Development", "Regional Development"]');
         document.querySelectorAll('[data-pap-category]').forEach((input) => {
-            input.checked = ['Research and Development', 'Regional Development'].includes(input.value);
+            input.checked = suggested.includes(input.value);
         });
     });
 });

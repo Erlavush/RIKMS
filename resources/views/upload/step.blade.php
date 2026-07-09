@@ -122,18 +122,32 @@
                 <form method="POST" action="{{ route('upload.sdg-tags', $document) }}" data-sdg-form>
                     @csrf
                     @method('PUT')
+                    @php
+                        $rawAiJson = $document->metadata?->raw_ai_json;
+                        $suggestedSdgData = $rawAiJson['suggested_sdgs'] ?? [
+                            ['sdg' => 9, 'reason' => 'Industry, innovation, infrastructure, and cybersecurity systems', 'confidence' => 0.88],
+                            ['sdg' => 16, 'reason' => 'Peace, justice, security, and institutional resilience', 'confidence' => 0.82],
+                            ['sdg' => 8, 'reason' => 'Decent work and secure digital economy', 'confidence' => 0.75]
+                        ];
+                        $suggestedSdgNumbers = collect($suggestedSdgData)->pluck('sdg')->map(fn($n) => (int)$n)->toArray();
+                        $suggestedSdgs = \App\Models\SdgTag::whereIn('number', $suggestedSdgNumbers)->get()->keyBy('number');
+                    @endphp
                     <x-form-section-card title="SDG Tagging" :badge="'STEP '.$step.' OF '.$totalSteps" icon="sparkle" subtitle="Select Sustainable Development Goals - used for repository classification and filtering.">
                         <div class="ai-suggestion">
                             <div>
                                 <strong>AI SDG Suggestion</strong>
-                                <p>Based on extracted metadata, we suggest</p>
+                                <p>Based on extracted metadata, we suggest:</p>
                                 <div class="tag-row">
-                                    <span class="sdg-pill" style="--sdg-color:#F97316">SDG 9</span>
-                                    <span class="sdg-pill" style="--sdg-color:#0F4C81">SDG 16</span>
-                                    <span class="sdg-pill" style="--sdg-color:#BE185D">SDG 8</span>
+                                    @foreach ($suggestedSdgData as $sData)
+                                        @if ($sdgObj = $suggestedSdgs->get((int)$sData['sdg']))
+                                            <span class="sdg-pill" style="--sdg-color: {{ $sdgObj->color }}" title="{{ $sData['reason'] ?? '' }} ({{ round(($sData['confidence'] ?? 0) * 100) }}% confidence)">
+                                                SDG {{ $sdgObj->number }} ({{ round(($sData['confidence'] ?? 0) * 100) }}%)
+                                            </span>
+                                        @endif
+                                    @endforeach
                                 </div>
                             </div>
-                            <button class="btn-warning" type="button" data-apply-sdg>Apply All</button>
+                            <button class="btn-warning" type="button" data-apply-sdg="{{ json_encode($suggestedSdgNumbers) }}">Apply All</button>
                         </div>
                         <h3>Select Applicable SDGs</h3>
                         <div class="sdg-grid">
@@ -235,9 +249,20 @@
                     @csrf
                     @method('PUT')
                     <x-form-section-card title="PAP Classification" badge="STEP 5 OF 9" icon="archive" subtitle="Classify the report under applicable programs, activities, and projects with beneficiary sectors.">
+                        @php
+                            $suggestedPap = $document->metadata?->raw_ai_json['pap_suggestions'] ?? ['Research and Development', 'Regional Development'];
+                        @endphp
                         <div class="ai-suggestion">
-                            <div><strong>AI Suggestions</strong><p>Recommended categories from extracted metadata.</p><div class="tag-row"><x-badge tone="purple">Research and Development</x-badge><x-badge tone="blue">Regional Development</x-badge></div></div>
-                            <button type="button" class="btn-ai" data-apply-pap>Apply AI Suggestion</button>
+                            <div>
+                                <strong>AI Suggestions</strong>
+                                <p>Recommended categories from extracted metadata.</p>
+                                <div class="tag-row">
+                                    @foreach ($suggestedPap as $papCat)
+                                        <x-badge tone="purple">{{ $papCat }}</x-badge>
+                                    @endforeach
+                                </div>
+                            </div>
+                            <button type="button" class="btn-ai" data-apply-pap="{{ json_encode($suggestedPap) }}">Apply AI Suggestion</button>
                         </div>
                         <h3>PAP Categories</h3>
                         <div class="chip-grid">
