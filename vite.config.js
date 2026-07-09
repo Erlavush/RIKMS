@@ -15,7 +15,7 @@ export default defineConfig({
     ],
     resolve: {
         alias: {
-            'figma:asset': fileURLToPath(new URL('./resources/js/assets', import.meta.url)),
+            'figma:asset': fileURLToPath(new URL('./resources/js/assets', import.meta.url)).replace(/\\/g, '/'),
         },
     },
     server: {
