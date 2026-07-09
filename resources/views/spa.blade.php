@@ -8,6 +8,7 @@
     <script>
         window.__RIKMS_BOOTSTRAP__ = @json($bootstrap, JSON_UNESCAPED_SLASHES);
     </script>
+    @viteReactRefresh
     @vite('resources/js/main.tsx')
 </head>
 <body>
