@@ -105,6 +105,11 @@ class UploadWizardController extends Controller
         }
 
         $document->update($updates);
+
+        if ($request->hasFile('document_file')) {
+            \App\Jobs\ProcessDocumentJob::dispatch($document);
+        }
+
         $this->audit->log('file uploaded', $document, ['filename' => $document->original_filename], $request);
 
         return redirect()->route('upload.step', [$document, 3]);

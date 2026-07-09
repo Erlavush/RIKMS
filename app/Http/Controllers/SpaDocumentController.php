@@ -93,6 +93,10 @@ class SpaDocumentController extends Controller
             'raw_ai_json' => $metadata ?: null,
         ]);
 
+        if ($file) {
+            \App\Jobs\ProcessDocumentJob::dispatch($document);
+        }
+
         foreach ($this->metadataFieldMap() as $reactKey => $databaseKey) {
             PublicMetadataField::create([
                 'document_id' => $document->id,

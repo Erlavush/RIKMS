@@ -38,6 +38,12 @@ class Document extends Model
         'digital_library_score',
         'submitted_at',
         'published_at',
+        'hash',
+        'malware_status',
+        'integrity_status',
+        'processing_status',
+        'extracted_text',
+        'processing_error',
     ];
 
     protected function casts(): array
@@ -101,6 +107,11 @@ class Document extends Model
     public function highlights()
     {
         return $this->hasMany(Highlight::class);
+    }
+
+    public function chunks()
+    {
+        return $this->hasMany(DocumentChunk::class);
     }
 
     public function isResearchStudy(): bool
