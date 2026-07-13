@@ -12,7 +12,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
 } from "recharts";
-import { SDG_DATA, SDG_RESEARCH_COUNTS } from "../../data/mock-data";
+import { SDG_DATA, SDG_RESEARCH_COUNTS, RESEARCH_DATA } from "../../data/mock-data";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -93,187 +93,62 @@ const SDG_CATEGORIES = [
 
 // ─── Mock Research Data ────────────────────────────────────────────────────────
 
-const RESEARCH_ITEMS: ResearchItem[] = [
-  {
-    id: 1,
-    title: "Impact of Climate Change on Coastal Communities in the Davao Gulf",
-    authors: ["Dr. Maria Santos", "Dr. Juan Dela Cruz", "Prof. Ana Reyes"],
-    year: 2025, quarter: "Q1",
-    agency: "Southern Mindanao Agriculture Aquatic and Natural Resources R&D Consortium",
-    agencyAbbr: "SMAARRDEC",
-    category: "Environmental Science", docType: "Research Study",
-    sdgs: [13, 14, 11], accessPolicy: "Public", status: "Published",
-    lastUpdated: "2025-02-28", downloads: 1247,
-    abstract: "This study examines the socioeconomic impact of climate change on coastal communities along the Davao Gulf, identifying key vulnerability factors and proposing adaptation strategies for local government units.",
-    aiTagged: true,
-  },
-  {
-    id: 2,
-    title: "IoT-Based Environmental Monitoring System for Mount Apo Natural Park",
-    authors: ["Eng. Sofia Reyes", "Dr. Marco Villanueva"],
-    year: 2025, quarter: "Q1",
-    agency: "Department of Science and Technology – Region XI",
-    agencyAbbr: "DOST XI",
-    category: "Technology", docType: "Research Study",
-    sdgs: [6, 9, 15], accessPolicy: "Public", status: "Published",
-    lastUpdated: "2025-02-25", downloads: 389,
-    abstract: "IoT-based real-time monitoring of biodiversity indicators and water quality across Mount Apo Natural Park, evaluating the system for conservation management and early hazard detection.",
-    featured: true, aiTagged: true,
-  },
-  {
-    id: 3,
-    title: "AI-Assisted Water Quality Assessment Framework for Davao River Systems",
-    authors: ["Dr. Elena Torres", "Dr. Rafael Santos"],
-    year: 2025, quarter: "Q2",
-    agency: "DOST XI", agencyAbbr: "DOST XI",
-    category: "Technology", docType: "Terminal Report",
-    sdgs: [6, 9], accessPolicy: "Restricted", status: "Draft",
-    lastUpdated: "2025-03-01", downloads: 0,
-    papCategory: "Digital Economy", completion: 78, budgetUtil: 65,
-  },
-  {
-    id: 4,
-    title: "Indigenous Knowledge Systems in Disaster Risk Reduction: A Davao Region Study",
-    authors: ["Prof. Ana Reyes", "Dr. Carlos Tan"],
-    year: 2024, quarter: "Q4",
-    agency: "University of Southeastern Philippines", agencyAbbr: "USEP",
-    category: "Social Sciences", docType: "Research Study",
-    sdgs: [11, 13], accessPolicy: "Request Access", status: "Published",
-    lastUpdated: "2024-12-15", downloads: 892,
-    abstract: "Documents how indigenous knowledge systems in highland Davao communities contribute to disaster resilience and climate adaptation in geographically isolated areas.",
-    aiTagged: true,
-  },
-  {
-    id: 5,
-    title: "Renewable Energy Microgrids for Off-Grid Barangays in Southern Mindanao",
-    authors: ["Eng. Miguel Ramos"],
-    year: 2025, quarter: "Q1",
-    agency: "DRIEERDC", agencyAbbr: "DRIEERDC",
-    category: "Technology", docType: "Terminal Report",
-    sdgs: [7, 9, 11], accessPolicy: "Embargoed", status: "Draft",
-    lastUpdated: "2025-03-03", downloads: 0,
-    papCategory: "Circular Economy", completion: 45, budgetUtil: 38,
-  },
-  {
-    id: 6,
-    title: "Biodiversity Assessment of Mount Hamiguitan Range Wildlife Sanctuary",
-    authors: ["Dr. Lena Gomez", "Prof. Ricardo Bautista"],
-    year: 2024, quarter: "Q3",
-    agency: "SMAARRDEC", agencyAbbr: "SMAARRDEC",
-    category: "Environmental Science", docType: "Research Study",
-    sdgs: [15, 13], accessPolicy: "Public", status: "Published",
-    lastUpdated: "2024-11-20", downloads: 567,
-    abstract: "A comprehensive biodiversity assessment documenting flora, fauna, and endemic species within the Mount Hamiguitan UNESCO World Heritage Site.",
-    aiTagged: true,
-  },
-  {
-    id: 7,
-    title: "Smart Farming Technologies for Cacao Production in Davao Region",
-    authors: ["Dr. Pedro Villanueva", "Dr. Rosa Lim"],
-    year: 2024, quarter: "Q3",
-    agency: "SMAARRDEC", agencyAbbr: "SMAARRDEC",
-    category: "Agriculture", docType: "Project Report",
-    sdgs: [2, 12], accessPolicy: "Public", status: "Published",
-    lastUpdated: "2024-10-10", downloads: 445,
-    papCategory: "STI Strategy", completion: 100, budgetUtil: 91,
-    aiTagged: true,
-  },
-  {
-    id: 8,
-    title: "Community-Based Tuberculosis Prevention in Urban Poor Areas of Davao City",
-    authors: ["Dr. Isabella Cruz", "Dr. Fernando Aquino"],
-    year: 2023, quarter: "Q4",
-    agency: "Regional Health Research and Development Consortium XI", agencyAbbr: "RHRDC XI",
-    category: "Public Health", docType: "Research Study",
-    sdgs: [3, 1], accessPolicy: "Public", status: "Archived",
-    lastUpdated: "2023-12-01", downloads: 1823,
-    abstract: "Community-driven TB prevention strategies targeting urban poor populations, with documented reductions in new infection rates following 18-month interventions in Davao City.",
-  },
-  {
-    id: 9,
-    title: "Digital Literacy Programs and Their Effect on Rural Education Outcomes",
-    authors: ["Prof. Roberto Garcia", "Dr. Elena Marquez"],
-    year: 2025, quarter: "Q1",
-    agency: "Commission on Higher Education – Region XI", agencyAbbr: "CHED XI",
-    category: "Education", docType: "Terminal Report",
-    sdgs: [4, 10, 9], accessPolicy: "Request Access", status: "Published",
-    lastUpdated: "2025-01-18", downloads: 893,
-    papCategory: "Digital Economy", completion: 95, budgetUtil: 87,
-    aiTagged: true, featured: true,
-  },
-  {
-    id: 10,
-    title: "Sustainable Agriculture Practices for Smallholder Farmers in Southern Mindanao",
-    authors: ["Dr. Pedro Villanueva", "Dr. Rosa Lim", "Dr. Carlos Tan"],
-    year: 2024, quarter: "Q2",
-    agency: "SMAARRDEC", agencyAbbr: "SMAARRDEC",
-    category: "Agriculture", docType: "Research Study",
-    sdgs: [2, 12, 15, 1], accessPolicy: "Public", status: "Published",
-    lastUpdated: "2024-09-22", downloads: 756,
-    abstract: "Documents best practices in organic farming, water conservation, and crop diversification that improved yields and income for smallholder farming communities across Southern Mindanao.",
-    aiTagged: true,
-  },
-  {
-    id: 11,
-    title: "Public Health Response Framework for Emerging Infectious Diseases in Region XI",
-    authors: ["Dr. Isabella Cruz", "Dr. Fernando Aquino"],
-    year: 2025, quarter: "Q2",
-    agency: "RHRDC XI", agencyAbbr: "RHRDC XI",
-    category: "Public Health", docType: "Research Study",
-    sdgs: [3, 17], accessPolicy: "Restricted", status: "Published",
-    lastUpdated: "2025-02-10", downloads: 2103,
-    abstract: "A multi-tiered response framework for emerging infectious diseases in Region XI, incorporating surveillance, rapid testing, contact tracing, and community-based health interventions.",
-    aiTagged: true,
-  },
-  {
-    id: 12,
-    title: "Geospatial Analysis for Regional Development Planning in Davao Region",
-    authors: ["Dr. Teresa Mendez", "Prof. Andrew Pascual", "Dr. Lea Navarro"],
-    year: 2024, quarter: "Q3",
-    agency: "National Economic and Development Authority – Region XI", agencyAbbr: "NEDA XI",
-    category: "Social Sciences", docType: "Project Report",
-    sdgs: [11, 8, 17], accessPolicy: "Public", status: "Published",
-    lastUpdated: "2024-08-05", downloads: 478,
-    papCategory: "STI Strategy", completion: 100, budgetUtil: 94,
-    aiTagged: true,
-  },
-  {
-    id: 13,
-    title: "Economic Impact of Digital Transformation on MSMEs in Davao Region",
-    authors: ["Dr. Antonio Mendoza", "Dr. Grace Lim"],
-    year: 2025, quarter: "Q1",
-    agency: "Department of Trade and Industry – Region XI", agencyAbbr: "DTI XI",
-    category: "Economics", docType: "Terminal Report",
-    sdgs: [8, 17, 10], accessPolicy: "Public", status: "Published",
-    lastUpdated: "2025-01-30", downloads: 567,
-    papCategory: "Digital Economy", completion: 100, budgetUtil: 88,
-    aiTagged: true, featured: true,
-  },
-  {
-    id: 14,
-    title: "Gender Equality in STEM Education: A Regional Assessment",
-    authors: ["Dr. Carmen Flores", "Prof. Diana Salazar"],
-    year: 2024, quarter: "Q2",
-    agency: "University of Southeastern Philippines", agencyAbbr: "USEP",
-    category: "Social Sciences", docType: "Research Study",
-    sdgs: [5, 4, 10], accessPolicy: "Public", status: "Published",
-    lastUpdated: "2024-07-14", downloads: 445,
-    abstract: "Regional assessment of gender equality in STEM education, examining enrollment patterns, retention rates, and institutional barriers at HEIs in the Davao Region.",
-    aiTagged: true,
-  },
-  {
-    id: 15,
-    title: "Cybersecurity Readiness Assessment of Government ICT Infrastructure in Region XI",
-    authors: ["Eng. Rafael Domingo", "Dr. Lisa Tan"],
-    year: 2025, quarter: "Q1",
-    agency: "Department of Information and Communications Technology – Region XI", agencyAbbr: "DICT XI",
-    category: "Technology", docType: "Research Study",
-    sdgs: [9, 16, 17], accessPolicy: "Public", status: "Published",
-    lastUpdated: "2025-02-05", downloads: 312,
-    abstract: "A comprehensive cybersecurity readiness assessment of government ICT infrastructure across Region XI agencies, proposing a regional cybersecurity framework.",
-    aiTagged: true,
-  },
-];
+const mapAccessPolicy = (mode: string | undefined): AccessPolicy => {
+  if (!mode) return "Public";
+  const m = mode.toLowerCase();
+  if (m.includes("public")) return "Public";
+  if (m.includes("request")) return "Request Access";
+  if (m.includes("restricted")) return "Restricted";
+  if (m.includes("embargo")) return "Embargoed";
+  return "Public";
+};
+
+const mapDocType = (type: string | undefined, category: string | undefined): DocType => {
+  if (!type) {
+    if (category === "Terminal Report") return "Terminal Report";
+    if (category === "Project Report") return "Project Report";
+    return "Research Study";
+  }
+  const t = type.toLowerCase();
+  if (t === "research_study" || t === "research study") return "Research Study";
+  if (t === "terminal_report" || t === "terminal report") return "Terminal Report";
+  if (t === "project_accomplishment_report" || t === "project report" || t === "project accomplishment report" || t === "pap") return "Project Report";
+  return "Research Study";
+};
+
+const mapStatus = (status: string | undefined): ResearchStatus => {
+  if (!status) return "Published";
+  const s = status.toLowerCase();
+  if (s === "published") return "Published";
+  if (s === "draft" || s === "pending") return "Draft";
+  if (s === "archived" || s === "rejected") return "Archived";
+  return "Published";
+};
+
+const RESEARCH_ITEMS: ResearchItem[] = RESEARCH_DATA.map((item: any) => {
+  return {
+    id: item.id,
+    title: item.title || "Untitled Document",
+    authors: Array.isArray(item.authors) ? item.authors : [item.authors || "Unknown Author"],
+    year: item.year || new Date().getFullYear(),
+    quarter: item.quarter,
+    agency: item.agency || "Unassigned Agency",
+    agencyAbbr: item.agencyAbbr || "N/A",
+    category: item.category || "General",
+    docType: mapDocType(item.docType || item.document_type, item.category),
+    sdgs: Array.isArray(item.sdgs) ? item.sdgs : [],
+    accessPolicy: mapAccessPolicy(item.accessPolicy || item.accessMode || item.access_mode),
+    status: mapStatus(item.status),
+    lastUpdated: item.lastUpdated || item.updated_at || new Date().toISOString().split('T')[0],
+    downloads: item.downloads || 0,
+    abstract: item.abstract || item.description,
+    papCategory: item.papCategory || item.pap_category,
+    completion: item.completion || item.completionScore,
+    budgetUtil: item.budgetUtil,
+    featured: !!item.featured,
+    aiTagged: !!item.isAiTagged || !!item.aiTagged,
+  };
+});
 
 const AGENCIES_LIST   = [...new Set(RESEARCH_ITEMS.map(r => r.agencyAbbr))].sort();
 const YEARS_LIST      = [...new Set(RESEARCH_ITEMS.map(r => String(r.year)))].sort((a, b) => +b - +a);

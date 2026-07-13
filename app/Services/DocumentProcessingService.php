@@ -24,21 +24,29 @@ class DocumentProcessingService
             'processing_error' => null,
         ]);
 
+        $tempFile = null;
         try {
             $filePath = $document->file_path;
 
-            if (!$filePath || !Storage::disk('local')->exists($filePath)) {
+            if (!$filePath || !Storage::disk()->exists($filePath)) {
                 throw new Exception("File does not exist on storage path: {$filePath}");
             }
 
+            // Obtain a local file path (either directly on the local disk, or downloaded temporarily from cloud)
+            $isTemporary = false;
+            $localPath = $this->getLocalPath($filePath, $isTemporary);
+            if ($isTemporary) {
+                $tempFile = $localPath;
+            }
+
             // Stage 1: Integrity Check
-            $this->checkIntegrity($document);
+            $this->checkIntegrity($document, $localPath);
 
             // Stage 1: Malware Scan
             $this->scanMalware($document);
 
             // Stage 2: Text Extraction & Preparation
-            $extractedText = $this->extractText($document);
+            $extractedText = $this->extractText($document, $localPath);
             $cleanedText = $this->cleanText($extractedText);
 
             $document->update([
@@ -63,17 +71,50 @@ class DocumentProcessingService
             ]);
 
             throw $e;
+        } finally {
+            // Clean up temporary local file if created
+            if ($tempFile && file_exists($tempFile)) {
+                unlink($tempFile);
+            }
         }
+    }
+
+    /**
+     * Get a local physical path for a stored file, downloading it to a temporary
+     * file if it is hosted on a cloud disk like Google Drive.
+     */
+    private function getLocalPath(string $filePath, &$isTemporary): string
+    {
+        $disk = Storage::disk();
+        
+        try {
+            // If the disk supports direct local path, use it.
+            if ($disk->getAdapter() instanceof \League\Flysystem\Local\LocalFilesystemAdapter) {
+                $isTemporary = false;
+                return $disk->path($filePath);
+            }
+        } catch (\Exception $e) {
+            // Fall through to download
+        }
+
+        // If it's a cloud disk (like Google Drive), download file content to a temp file.
+        $content = $disk->get($filePath);
+        if ($content === null) {
+            throw new Exception("Could not retrieve file content from storage disk.");
+        }
+
+        $tempPath = tempnam(sys_get_temp_dir(), 'rikms_pdf_');
+        file_put_contents($tempPath, $content);
+        
+        $isTemporary = true;
+        return $tempPath;
     }
 
     /**
      * Check file integrity by checking readability and computing SHA-256 hash.
      */
-    public function checkIntegrity(Document $document): void
+    public function checkIntegrity(Document $document, string $realPath): void
     {
-        $filePath = $document->file_path;
-        $realPath = Storage::disk('local')->path($filePath);
-
         if (!is_readable($realPath)) {
             $document->update(['integrity_status' => 'failed']);
             throw new Exception("File integrity check failed: file is not readable.");
@@ -98,7 +139,7 @@ class DocumentProcessingService
     public function scanMalware(Document $document): void
     {
         $filePath = $document->file_path;
-        $fileContent = Storage::disk('local')->get($filePath);
+        $fileContent = Storage::disk()->get($filePath);
 
         // Standard EICAR test string signature (substring check to avoid Windows Defender locking)
         $eicarSignature = 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE';
@@ -116,10 +157,8 @@ class DocumentProcessingService
     /**
      * Extract text from PDF, with OCR fallback simulation if PDF is scanned.
      */
-    public function extractText(Document $document): string
+    public function extractText(Document $document, string $realPath): string
     {
-        $filePath = $document->file_path;
-        $realPath = Storage::disk('local')->path($filePath);
         $mime = $document->mime_type;
 
         $text = '';
