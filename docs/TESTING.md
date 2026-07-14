@@ -30,4 +30,4 @@ Backend feature tests use in-memory SQLite and must not touch `database/database
 - Office documents and PDFs above the configured 25 MB boundary are rejected.
 - AI-enabled uploads remain drafts and queue one tracked analysis job.
 - AI suggestions cannot mutate metadata until an authorized user applies and saves them; acceptance is separately audited.
-- Demo-data purge matches only known fixture records, and cohort provisioning creates exactly one leader plus six isolated agency users without printing passwords.
+- Demo-data purge matches only known fixture records, and cohort provisioning supports one leader plus a validated dynamic set of isolated agency users without printing passwords.

@@ -123,21 +123,29 @@ class AiAndTestCohortTest extends TestCase
         $this->assertSame(1, Document::query()->count());
     }
 
-    public function test_private_manifest_provisions_exactly_seven_forced_rotation_accounts(): void
+    public function test_private_manifest_provisions_leader_and_dynamic_forced_rotation_accounts(): void
     {
         $manifest = tempnam(sys_get_temp_dir(), 'rikms-cohort-');
         $payload = [
             'admin' => ['name' => 'Team Leader', 'email' => 'leader@gmail.com'],
-            'testers' => collect(range(1, 6))->map(fn (int $index) => [
+            'testers' => collect(range(1, 12))->map(fn (int $index) => [
                 'name' => "Tester {$index}",
                 'email' => "tester{$index}@gmail.com",
+                ...($index === 1 ? ['previous_email' => 'old-tester1@gmail.com'] : []),
                 'company' => "Authorized Test Company {$index}",
                 'company_abbreviation' => "ATC{$index}",
             ])->all(),
         ];
         file_put_contents($manifest, json_encode($payload, JSON_THROW_ON_ERROR));
         putenv('RIKMS_TEST_PASSWORD_ADMIN=Strong!AdminPassword2026');
-        foreach (range(1, 6) as $index) {
+        User::query()->create([
+            'name' => 'Old Tester 1',
+            'email' => 'old-tester1@gmail.com',
+            'password' => 'OldPassword123!',
+            'role' => 'agency_admin',
+            'is_active' => true,
+        ]);
+        foreach (range(1, 12) as $index) {
             putenv("RIKMS_TEST_PASSWORD_{$index}=Strong!TesterPassword{$index}#2026");
         }
 
@@ -146,18 +154,19 @@ class AiAndTestCohortTest extends TestCase
         } finally {
             @unlink($manifest);
             putenv('RIKMS_TEST_PASSWORD_ADMIN');
-            foreach (range(1, 6) as $index) {
+            foreach (range(1, 12) as $index) {
                 putenv("RIKMS_TEST_PASSWORD_{$index}");
             }
         }
 
-        $this->assertSame(6, User::query()->where('email', 'like', 'tester%@gmail.com')->count());
+        $this->assertSame(12, User::query()->where('email', 'like', 'tester%@gmail.com')->count());
+        $this->assertDatabaseMissing('users', ['email' => 'old-tester1@gmail.com']);
         $this->assertDatabaseHas('users', [
             'email' => 'leader@gmail.com',
             'role' => 'super_admin',
             'must_change_password' => true,
         ]);
-        $this->assertSame(6, User::query()->where('role', 'agency_admin')->where('must_change_password', true)
+        $this->assertSame(12, User::query()->where('role', 'agency_admin')->where('must_change_password', true)
             ->where('email', 'like', 'tester%@gmail.com')->whereNotNull('agency_id')->count());
         $this->assertFalse(User::query()->where('email', 'test@example.com')->firstOrFail()->is_active);
     }

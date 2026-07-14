@@ -15,11 +15,11 @@ use RuntimeException;
 class ProvisionRikmsTestCohort extends Command
 {
     protected $signature = 'rikms:provision-test-cohort
-        {manifest : Path to a private JSON manifest containing one leader and six testers}
-        {--password-prefix=RIKMS_TEST_PASSWORD : Environment prefix; expects _ADMIN and _1 through _6}
+        {manifest : Path to a private JSON manifest containing one leader and one or more testers}
+        {--password-prefix=RIKMS_TEST_PASSWORD : Environment prefix; expects _ADMIN and one numbered variable per tester}
         {--disable-demo : Disable the known fixed demonstration accounts}';
 
-    protected $description = 'Provision the isolated seven-account penetration-test cohort without storing plaintext passwords';
+    protected $description = 'Provision an isolated penetration-test cohort without storing plaintext passwords';
 
     public function handle(): int
     {
@@ -27,7 +27,10 @@ class ProvisionRikmsTestCohort extends Command
         $prefix = (string) $this->option('password-prefix');
         $credentials = [
             'admin' => $this->password($prefix.'_ADMIN'),
-            ...array_map(fn (int $index) => $this->password($prefix.'_'.$index), range(1, 6)),
+            ...array_map(
+                fn (int $index) => $this->password($prefix.'_'.$index),
+                range(1, count($manifest['testers'])),
+            ),
         ];
 
         DB::transaction(function () use ($manifest, $credentials): void {
@@ -61,12 +64,13 @@ class ProvisionRikmsTestCohort extends Command
             }
         });
 
-        $this->components->info('Provisioned one super administrator and six isolated agency testers. No password was printed or stored in the manifest.');
+        $testerCount = count($manifest['testers']);
+        $this->components->info("Provisioned one super administrator and {$testerCount} isolated agency testers. No password was printed or stored in the manifest.");
 
         return self::SUCCESS;
     }
 
-    /** @return array{admin: array{name: string, email: string}, testers: array<int, array{name: string, email: string, company: string, company_abbreviation?: string, region?: string}>} */
+    /** @return array{admin: array{name: string, email: string}, testers: array<int, array{name: string, email: string, previous_email?: string, company: string, company_abbreviation?: string, region?: string}>} */
     private function manifest(string $path): array
     {
         if (! is_file($path) || ! is_readable($path)) {
@@ -83,9 +87,10 @@ class ProvisionRikmsTestCohort extends Command
             'admin' => ['required', 'array'],
             'admin.name' => ['required', 'string', 'max:255'],
             'admin.email' => ['required', 'email:rfc', 'max:255'],
-            'testers' => ['required', 'array', 'size:6'],
+            'testers' => ['required', 'array', 'min:1', 'max:50'],
             'testers.*.name' => ['required', 'string', 'max:255'],
             'testers.*.email' => ['required', 'email:rfc', 'max:255', 'distinct'],
+            'testers.*.previous_email' => ['nullable', 'email:rfc', 'max:255', 'distinct'],
             'testers.*.company' => ['required', 'string', 'max:255', 'distinct'],
             'testers.*.company_abbreviation' => ['nullable', 'string', 'max:50'],
             'testers.*.region' => ['nullable', 'string', 'max:255'],
@@ -93,7 +98,7 @@ class ProvisionRikmsTestCohort extends Command
         $validated = $validator->validate();
         $emails = collect($validated['testers'])->pluck('email')->map(fn ($email) => strtolower($email));
         if ($emails->contains(strtolower($validated['admin']['email']))) {
-            throw new RuntimeException('The leader email must be different from all six tester emails.');
+            throw new RuntimeException('The leader email must be different from all tester emails.');
         }
 
         return $validated;
@@ -112,11 +117,26 @@ class ProvisionRikmsTestCohort extends Command
         return $password;
     }
 
-    /** @param array{name: string, email: string} $identity */
+    /** @param array{name: string, email: string, previous_email?: string} $identity */
     private function upsertUser(array $identity, string $password, ?int $agencyId, string $role): User
     {
+        $email = strtolower($identity['email']);
+        $previousEmail = isset($identity['previous_email'])
+            ? strtolower($identity['previous_email'])
+            : null;
+        if ($previousEmail && $previousEmail !== $email) {
+            $previousUser = User::query()->where('email', $previousEmail)->first();
+            $targetUser = User::query()->where('email', $email)->first();
+            if ($previousUser && $targetUser && $previousUser->id !== $targetUser->id) {
+                throw new RuntimeException('The corrected cohort email already belongs to another account.');
+            }
+            if ($previousUser && ! $targetUser) {
+                $previousUser->forceFill(['email' => $email])->save();
+            }
+        }
+
         $user = User::query()->updateOrCreate(
-            ['email' => strtolower($identity['email'])],
+            ['email' => $email],
             [
                 'name' => $identity['name'],
                 'password' => $password,
