@@ -8,6 +8,12 @@ use Illuminate\Support\Facades\Crypt;
 
 abstract class TestCase extends BaseTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->withoutVite();
+    }
+
     protected function withConfirmedTwoFactor(User $user): User
     {
         $user->forceFill([
