@@ -14,11 +14,25 @@ PORT = 8888
 XML_FILE = 'report.xml'
 LARASTAN_FILE = 'larastan-report.json'
 ZAP_FILE = 'zap-report.json'
+COMPOSER_AUDIT_FILE = 'composer-audit-report.json'
+NPM_AUDIT_FILE = 'npm-audit-report.json'
+ROUTE_MAP_FILE = 'route-map.json'
 
 ACTIVE_DASHBOARD_PORT = 8888
 
 # ----------------- SCAN RUNNER AUTOMATION -----------------
 def run_background_scans():
+    # 0. Run PHPUnit Functional & Security Tests
+    print("\n=======================================================")
+    print("[Shift-Left] Running automated functional and BOLA test suite...")
+    print("=======================================================")
+    phpunit_cmd = "php vendor/bin/phpunit --log-junit report.xml"
+    try:
+        subprocess.run(phpunit_cmd, shell=True, capture_output=True, text=True)
+        print("[Shift-Left] Test suite run completed. Saved results to report.xml")
+    except Exception as e:
+        print(f"[Shift-Left] Error running tests: {e}")
+
     # 1. Run Larastan Scan
     print("\n=======================================================")
     print("[SAST] Starting automated Larastan static analysis scan...")
@@ -45,6 +59,43 @@ def run_background_scans():
             print(f"[SAST] Larastan scan run with warning. Output saved to {LARASTAN_FILE}")
     except Exception as e:
         print(f"[SAST] Error running Larastan scan: {e}")
+
+    # 1.5. Run Software Composition Analysis (SCA)
+    print("\n=======================================================")
+    print("[SCA] Starting Software Composition Analysis (SCA)...")
+    print("=======================================================")
+    try:
+        print("[SCA] Running composer audit...")
+        res = subprocess.run("composer audit --format=json", shell=True, capture_output=True, text=True)
+        with open(COMPOSER_AUDIT_FILE, 'w', encoding='utf-8') as f:
+            f.write(res.stdout or "{}")
+        print(f"[SCA] Composer audit completed. Saved to {COMPOSER_AUDIT_FILE}")
+    except Exception as e:
+        print(f"[SCA] Error running Composer audit: {e}")
+
+    try:
+        print("[SCA] Running npm audit...")
+        res = subprocess.run("npm audit --json", shell=True, capture_output=True, text=True)
+        with open(NPM_AUDIT_FILE, 'w', encoding='utf-8') as f:
+            f.write(res.stdout or "{}")
+        print(f"[SCA] NPM audit completed. Saved to {NPM_AUDIT_FILE}")
+    except Exception as e:
+        print(f"[SCA] Error running NPM audit: {e}")
+
+    # 1.6. Generate Route Map for Greybox DAST Seeding
+    print("\n=======================================================")
+    print("[DAST Seeding] Dumping application endpoints route-map...")
+    print("=======================================================")
+    try:
+        res = subprocess.run("php artisan route:list --json", shell=True, capture_output=True, text=True)
+        if res.stdout and res.stdout.strip().startswith("["):
+            with open(ROUTE_MAP_FILE, 'w', encoding='utf-8') as f:
+                f.write(res.stdout)
+            print(f"[DAST Seeding] Seeding endpoint directory saved to {ROUTE_MAP_FILE}")
+        else:
+            print("[DAST Seeding] Could not extract route list from Laravel.")
+    except Exception as e:
+        print(f"[DAST Seeding] Error dumping route list: {e}")
 
     # 2. Run ZAP Scan
     # Find ZAP
@@ -218,6 +269,59 @@ def parse_larastan_json(file_path):
         print(f"Error parsing Larastan JSON: {e}")
         return None
 
+def parse_composer_audit(file_path):
+    if not os.path.exists(file_path):
+        return []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        vulns = []
+        advisories = data.get('advisories', {})
+        for package, adv_list in advisories.items():
+            for adv in adv_list:
+                vulns.append({
+                    'package': package,
+                    'title': adv.get('title', 'Vulnerability'),
+                    'cve': adv.get('cve', 'N/A'),
+                    'severity': adv.get('severity', 'Unknown'),
+                    'affected': adv.get('affectedVersions', '*'),
+                    'link': adv.get('link', '')
+                })
+        return vulns
+    except Exception as e:
+        print(f"Error parsing Composer audit: {e}")
+        return []
+
+def parse_npm_audit(file_path):
+    if not os.path.exists(file_path):
+        return []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        vulns = []
+        vulnerabilities = data.get('vulnerabilities', {})
+        for pkg, info in vulnerabilities.items():
+            via = info.get('via', [])
+            cves = []
+            title = f"Dependency vulnerability in {pkg}"
+            for v in via:
+                if isinstance(v, dict):
+                    cves.append(v.get('cve', ''))
+                    title = v.get('title', title)
+            
+            vulns.append({
+                'package': pkg,
+                'title': title,
+                'cve': ", ".join(filter(None, cves)) or "N/A",
+                'severity': info.get('severity', 'unknown'),
+                'affected': info.get('range', '*'),
+                'link': "https://www.npmjs.com/advisories"
+            })
+        return vulns
+    except Exception as e:
+        print(f"Error parsing NPM audit: {e}")
+        return []
+
 def parse_zap_json(file_path):
     if not os.path.exists(file_path):
         return None
@@ -270,6 +374,16 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps(results or []).encode('utf-8'))
+        elif parsed_path.path == '/api/sca':
+            composer_vulns = parse_composer_audit(COMPOSER_AUDIT_FILE)
+            npm_vulns = parse_npm_audit(NPM_AUDIT_FILE)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'composer': composer_vulns or [],
+                'npm': npm_vulns or []
+            }).encode('utf-8'))
         elif parsed_path.path == '/' or parsed_path.path == '/index.html':
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
@@ -885,6 +999,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             <button class="tab-btn active" onclick="switchTab('tests')">PHPUnit Tests</button>
             <button class="tab-btn" onclick="switchTab('larastan')">SAST (Larastan)</button>
             <button class="tab-btn" onclick="switchTab('zap')">DAST (OWASP ZAP)</button>
+            <button class="tab-btn" onclick="switchTab('sca')">Supply Chain (SCA)</button>
         </div>
 
         <!-- ================= PHPUNIT TAB ================= -->
@@ -1089,6 +1204,73 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </section>
         </div>
+
+        <!-- ================= SUPPLY CHAIN (SCA) TAB ================= -->
+        <div id="tab-sca" class="tab-content">
+            <section class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">Composer Issues</div>
+                    <div class="metric-value" id="sca-composer-count">0</div>
+                    <div class="metric-subtext">PHP dependency advisories</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">NPM Issues</div>
+                    <div class="metric-value" id="sca-npm-count">0</div>
+                    <div class="metric-subtext">Node module vulnerabilities</div>
+                </div>
+                <div class="metric-card" id="sca-status-card">
+                    <div class="metric-label">Supply Chain Status</div>
+                    <div class="metric-value" id="sca-status-value" style="font-size: 1.5rem;">Checking...</div>
+                    <div class="metric-subtext">Vulnerability audit scan result</div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <h2>PHP Dependencies (Composer Audit)</h2>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 20%;">Package</th>
+                                <th style="width: 15%;">Severity</th>
+                                <th style="width: 15%;">CVE</th>
+                                <th>Advisory Description</th>
+                                <th style="width: 10%;">Link</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scaComposerTableBody"></tbody>
+                    </table>
+                </div>
+                <div id="sca-composer-no-data" class="no-data-msg" style="display: none; padding: 1.5rem; text-align: center; color: var(--text-secondary);">
+                    No composer vulnerabilities detected or composer-audit-report.json missing.
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <h2>JavaScript Dependencies (NPM Audit)</h2>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 20%;">Package</th>
+                                <th style="width: 15%;">Severity</th>
+                                <th style="width: 15%;">CVE</th>
+                                <th>Advisory Description</th>
+                                <th style="width: 10%;">Link</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scaNpmTableBody"></tbody>
+                    </table>
+                </div>
+                <div id="sca-npm-no-data" class="no-data-msg" style="display: none; padding: 1.5rem; text-align: center; color: var(--text-secondary);">
+                    No NPM vulnerabilities detected or npm-audit-report.json missing.
+                </div>
+            </section>
+        </div>
     </div>
 
     <script>
@@ -1096,6 +1278,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         let testData = [];
         let larastanData = null;
         let zapData = [];
+        let scaData = { composer: [], npm: [] };
 
         // Chart instances
         let testPieInstance = null;
@@ -1257,7 +1440,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             await Promise.all([
                 loadTestData(),
                 loadLarastanData(),
-                loadZapData()
+                loadZapData(),
+                loadScaData()
             ]);
             calculateExecutiveHealth();
         }
@@ -1518,6 +1702,96 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             }
         }
 
+        async function loadScaData() {
+            try {
+                const response = await fetch('/api/sca');
+                scaData = await response.json();
+                
+                const composerCount = (scaData.composer || []).length;
+                const npmCount = (scaData.npm || []).length;
+                const totalCount = composerCount + npmCount;
+
+                document.getElementById('sca-composer-count').innerText = composerCount;
+                document.getElementById('sca-npm-count').innerText = npmCount;
+
+                const statusVal = document.getElementById('sca-status-value');
+                const cardEl = document.getElementById('sca-status-card');
+
+                if (totalCount === 0) {
+                    statusVal.innerText = 'SECURE';
+                    statusVal.style.color = 'var(--color-passed)';
+                    cardEl.className = 'metric-card passed';
+                } else {
+                    statusVal.innerText = `${totalCount} Vulns`;
+                    statusVal.style.color = 'var(--color-high)';
+                    cardEl.className = 'metric-card high-alert';
+                }
+
+                renderScaComposerTable(scaData.composer || []);
+                renderScaNpmTable(scaData.npm || []);
+            } catch (e) {
+                console.error("Failed to load SCA results:", e);
+            }
+        }
+
+        function renderScaComposerTable(vulns) {
+            const tbody = document.getElementById('scaComposerTableBody');
+            const nodata = document.getElementById('sca-composer-no-data');
+            tbody.innerHTML = '';
+            
+            if (vulns.length === 0) {
+                nodata.style.display = 'block';
+                return;
+            }
+            nodata.style.display = 'none';
+
+            vulns.forEach(v => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td style="font-weight: 600; color: #818cf8;">${escapeHtml(v.package)}</td>
+                    <td><span class="badge ${v.severity.toLowerCase()}">${escapeHtml(v.severity)}</span></td>
+                    <td><code style="font-family: var(--font-mono); color: #fb923c;">${escapeHtml(v.cve)}</code></td>
+                    <td>
+                        <div style="font-size: 0.9rem; color: #d1d5db;">${escapeHtml(v.title)}</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.25rem;">Affected versions: ${escapeHtml(v.affected)}</div>
+                    </td>
+                    <td>
+                        ${v.link ? `<a href="${escapeHtml(v.link)}" target="_blank" style="color: #818cf8; text-decoration: underline;">View</a>` : 'N/A'}
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderScaNpmTable(vulns) {
+            const tbody = document.getElementById('scaNpmTableBody');
+            const nodata = document.getElementById('sca-npm-no-data');
+            tbody.innerHTML = '';
+            
+            if (vulns.length === 0) {
+                nodata.style.display = 'block';
+                return;
+            }
+            nodata.style.display = 'none';
+
+            vulns.forEach(v => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td style="font-weight: 600; color: #818cf8;">${escapeHtml(v.package)}</td>
+                    <td><span class="badge ${v.severity.toLowerCase()}">${escapeHtml(v.severity)}</span></td>
+                    <td><code style="font-family: var(--font-mono); color: #fb923c;">${escapeHtml(v.cve)}</code></td>
+                    <td>
+                        <div style="font-size: 0.9rem; color: #d1d5db;">${escapeHtml(v.title)}</div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.25rem;">Affected range: ${escapeHtml(v.affected)}</div>
+                    </td>
+                    <td>
+                        ${v.link ? `<a href="${escapeHtml(v.link)}" target="_blank" style="color: #818cf8; text-decoration: underline;">View</a>` : 'N/A'}
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
         function renderZapTable(alerts) {
             const tbody = document.getElementById('zapTableBody');
             tbody.innerHTML = '';
@@ -1663,6 +1937,14 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 summaryText = "The application is currently At Risk. We detected active test failures, structural code errors, or significant vulnerability alerts (such as CORS exposure or clickjacking risks). Developers should focus on patching these items before exposing the portal to public traffic.";
                 document.getElementById('health-status-badge').innerText = "CRITICAL RISK";
                 document.getElementById('health-status-badge').className = "health-badge poor";
+            }
+
+            // Supply Chain Security Info
+            const composerCount = (scaData.composer || []).length;
+            const npmCount = (scaData.npm || []).length;
+            const totalScaCount = composerCount + npmCount;
+            if (totalScaCount > 0) {
+                summaryText += ` Warning: We detected ${totalScaCount} package dependency vulnerabilities in your Software Supply Chain (SCA). Outdated third-party libraries represent an exposure surface. `;
             }
 
             // Append report generation reminders

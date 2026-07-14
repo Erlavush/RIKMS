@@ -43,7 +43,7 @@ class DocumentProcessingService
             $this->checkIntegrity($document, $localPath);
 
             // Stage 1: Malware Scan
-            $this->scanMalware($document);
+            $this->scanMalware($document, $localPath);
 
             // Stage 2: Text Extraction & Preparation
             $extractedText = $this->extractText($document, $localPath);
@@ -134,24 +134,79 @@ class DocumentProcessingService
     }
 
     /**
-     * Scan file for malware (checking for EICAR test signature).
+     * Scan file for malware (using ClamAV socket streaming, with fallback to EICAR check).
      */
-    public function scanMalware(Document $document): void
+    public function scanMalware(Document $document, string $localPath): void
     {
-        $filePath = $document->file_path;
-        $fileContent = Storage::disk()->get($filePath);
+        $enabled = config('services.clamav.enabled', false);
+        $host = config('services.clamav.host', '127.0.0.1');
+        $port = (int) config('services.clamav.port', 3310);
+        $timeout = (int) config('services.clamav.timeout', 10);
 
-        // Standard EICAR test string signature (substring check to avoid Windows Defender locking)
-        $eicarSignature = 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE';
+        // Fallback to local EICAR signature check if ClamAV is disabled
+        if (!$enabled) {
+            $filePath = $document->file_path;
+            $fileContent = Storage::disk()->get($filePath);
 
-        if (str_contains($fileContent, $eicarSignature)) {
-            $document->update(['malware_status' => 'failed']);
-            throw new Exception("Security Threat: Malware detected (EICAR signature matched).");
+            // Standard EICAR test string signature (substring check to avoid Windows Defender locking)
+            $eicarSignature = 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE';
+
+            if (str_contains($fileContent, $eicarSignature)) {
+                $document->update(['malware_status' => 'failed']);
+                throw new Exception("Security Threat: Malware detected (EICAR signature matched).");
+            }
+
+            $document->update([
+                'malware_status' => 'passed',
+            ]);
+            return;
         }
 
-        $document->update([
-            'malware_status' => 'passed',
-        ]);
+        // Socket-based streaming ClamAV scan
+        $socket = @fsockopen($host, $port, $errno, $errstr, $timeout);
+        if (!$socket) {
+            Log::warning("ClamAV socket connection failed: {$errstr} ({$errno}). Scanning aborted.");
+            throw new Exception("Security scan failed: antivirus daemon offline.");
+        }
+
+        try {
+            // Send INSTREAM command
+            fwrite($socket, "zINSTREAM\0");
+
+            $handle = @fopen($localPath, 'rb');
+            if (!$handle) {
+                throw new Exception("Failed to open file for malware scanning.");
+            }
+
+            while (!feof($handle)) {
+                $chunk = fread($handle, 8192);
+                $length = strlen($chunk);
+                if ($length > 0) {
+                    // Send block length as 4-byte big-endian int, then block contents
+                    fwrite($socket, pack('N', $length) . $chunk);
+                }
+            }
+            fclose($handle);
+
+            // Send zero-length block to signal end of stream
+            fwrite($socket, pack('N', 0));
+            fflush($socket);
+
+            $response = fgets($socket, 1024);
+
+            if (str_contains($response, 'FOUND')) {
+                $document->update(['malware_status' => 'failed']);
+                preg_match('/FOUND\s+(.+)$/', $response, $matches);
+                $virusName = trim($matches[1] ?? 'Unknown Signature');
+                throw new Exception("Security Threat: Malware detected ({$virusName}).");
+            }
+
+            $document->update([
+                'malware_status' => 'passed',
+            ]);
+        } finally {
+            fclose($socket);
+        }
     }
 
     /**
