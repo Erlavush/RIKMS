@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import {
     Upload,
     FileText,
@@ -3269,6 +3269,7 @@ function LivePreviewReport({
 // ─── Root Component ────────────────────────────────────────────────────────────
 
 export function UploadResearch() {
+    const navigate = useNavigate();
     const { user } = useAgencyContext();
     const agencySettings = useApi<AgencySettingsData>("/api/rikms/agency/settings");
     const appliedDefaultAccess = useRef(false);
@@ -3617,10 +3618,22 @@ export function UploadResearch() {
         if (isReport && hlFile) payload.append("highlight_file", hlFile);
 
         try {
-            await apiPost<{ documentId: number; status: string; redirect: string }>(
-                "/api/rikms/documents",
-                payload,
-            );
+            const response = await apiPost<{
+                documentId: number;
+                status: string;
+                analysisQueued?: boolean;
+                redirect: string;
+            }>("/api/rikms/documents", payload);
+            if (isResearch) {
+                navigate(`/agency/research/${response.documentId}/edit`, {
+                    replace: true,
+                    state: {
+                        autoApplyAi: response.analysisQueued === true,
+                        fromUpload: true,
+                    },
+                });
+                return;
+            }
             setShowConfirm(false);
             setSubmitMode(mode);
             setIsSubmitted(true);
@@ -4000,17 +4013,33 @@ export function UploadResearch() {
 
                         <div className="flex items-center gap-3">
                             <span className="text-xs text-gray-400 font-medium">
-                                {step} / {!docType ? "?" : totalSteps}
+                                {step} / {!docType ? "?" : isResearch ? 2 : totalSteps}
                             </span>
 
                             {step < reviewStep && (
                                 <button
-                                    onClick={() => setStep((s) => Math.min(totalSteps, s + 1))}
-                                    disabled={!canProceed()}
-                                    className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all shadow-sm ${canProceed() ? "bg-[#1E3A8A] text-white hover:bg-[#1E3A8A]/90" : "bg-gray-200 text-gray-400 cursor-not-allowed"}`}
+                                    onClick={() => {
+                                        if (isResearch && step === 2) {
+                                            void submitDocument("draft");
+                                            return;
+                                        }
+                                        setStep((s) => Math.min(totalSteps, s + 1));
+                                    }}
+                                    disabled={!canProceed() || isSaving}
+                                    className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all shadow-sm ${canProceed() && !isSaving ? "bg-[#1E3A8A] text-white hover:bg-[#1E3A8A]/90" : "bg-gray-200 text-gray-400 cursor-not-allowed"}`}
                                 >
-                                    {step === prevToReviewStep ? "Review & Submit" : "Continue"}{" "}
-                                    <ChevronRight className="w-4 h-4" />
+                                    {isResearch && step === 2
+                                        ? isSaving
+                                            ? "Creating metadata draft…"
+                                            : "Continue to AI metadata"
+                                        : step === prevToReviewStep
+                                          ? "Review & Submit"
+                                          : "Continue"}{" "}
+                                    {isResearch && step === 2 && isSaving ? (
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                        <ChevronRight className="w-4 h-4" />
+                                    )}
                                 </button>
                             )}
 

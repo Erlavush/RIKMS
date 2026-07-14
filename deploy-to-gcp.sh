@@ -303,7 +303,7 @@ $GCLOUD_BIN run jobs deploy "${SERVICE_NAME}-queue" \
     --add-volume="name=rikms-documents,type=cloud-storage,bucket=${DOCUMENTS_BUCKET},mount-options=implicit-dirs;uid=82;gid=82;file-mode=660;dir-mode=770" \
     --add-volume-mount="volume=rikms-documents,mount-path=/mnt/rikms-documents" \
     --command=php \
-    --args=artisan,queue:work,--stop-when-empty,--tries=3,--max-time=540,--sleep=1 \
+    --args='^|^artisan|queue:work|--queue=ai,default|--stop-when-empty|--tries=3|--max-time=540|--sleep=1' \
     --max-retries=1 \
     --task-timeout=10m
 

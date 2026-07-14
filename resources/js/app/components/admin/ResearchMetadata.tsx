@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { ArrowLeft, Brain, Check, FileUp, Info, Plus, RefreshCw, Save, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useApi } from "../../hooks/useApi";
@@ -82,6 +82,14 @@ const inputClass =
 export function ResearchMetadata() {
     const { id } = useParams();
     const navigate = useNavigate();
+    const location = useLocation();
+    const uploadState = location.state as {
+        autoApplyAi?: boolean;
+        fromUpload?: boolean;
+    } | null;
+    const autoApplyAi = Boolean(uploadState?.autoApplyAi);
+    const fromUpload = Boolean(uploadState?.fromUpload);
+    const autoAppliedAnalysisId = useRef<number | null>(null);
     const detail = useApi<DetailResponse>(id ? `/api/rikms/agency/documents/${id}` : null);
     const aiAnalysis = useApi<DocumentAiAnalysisResponse>(
         id ? `/api/rikms/agency/documents/${id}/ai-analysis` : null,
@@ -162,6 +170,56 @@ export function ResearchMetadata() {
         const timer = window.setInterval(() => void aiAnalysis.refresh(), 3000);
         return () => window.clearInterval(timer);
     }, [aiAnalysis, aiAnalysis.data?.data?.status]);
+
+    useEffect(() => {
+        const analysis = aiAnalysis.data?.data;
+        const suggestions = analysis?.suggestions;
+        if (
+            !autoApplyAi ||
+            !analysis ||
+            analysis.status !== "completed" ||
+            !suggestions ||
+            initializedId !== detail.data?.data.id ||
+            autoAppliedAnalysisId.current === analysis.id
+        ) {
+            return;
+        }
+
+        autoAppliedAnalysisId.current = analysis.id;
+        setForm((current) => ({
+            ...current,
+            title:
+                current.title && current.title !== "Untitled research record"
+                    ? current.title
+                    : suggestions.title || current.title,
+            abstract: current.abstract || suggestions.abstract,
+            methodology: current.methodology || suggestions.methodology,
+            relatedLiterature: current.relatedLiterature || suggestions.review_of_related_literature,
+            theoreticalFramework: current.theoreticalFramework || suggestions.theoretical_framework,
+            resultsDiscussion: current.resultsDiscussion || suggestions.results_and_discussion,
+            keywords: current.keywords || suggestions.keywords.join(", "),
+            authors: current.authors || suggestions.authors.join(", "),
+            doi: current.doi || suggestions.doi,
+            category: current.category || suggestions.category,
+        }));
+        const suggestedSdgs = suggestions.suggested_sdgs.map((item) => item.number);
+        setSdgs((current) => (current.length ? current : suggestedSdgs));
+        setAppliedAnalysisId(analysis.id);
+        setAcceptedAiFields([
+            "title",
+            "abstract",
+            "methodology",
+            "review_of_related_literature",
+            "theoretical_framework",
+            "results_and_discussion",
+            "keywords",
+            "authors",
+            "doi",
+            "category",
+            ...(suggestedSdgs.length ? ["suggested_sdgs"] : []),
+        ]);
+        toast.success("Gemini filled the editable metadata draft. Review it before saving.");
+    }, [aiAnalysis.data?.data, autoApplyAi, detail.data?.data.id, initializedId]);
 
     function update<K extends keyof MetadataForm>(key: K, value: MetadataForm[K]) {
         setForm((current) => ({ ...current, [key]: value }));
@@ -387,14 +445,18 @@ export function ResearchMetadata() {
                         className="mb-3 inline-flex items-center gap-1 text-sm text-gray-500 hover:text-[#1E3A8A]"
                     >
                         <ArrowLeft className="h-4 w-4" />
-                        Back to repository
+                        {fromUpload ? "Back to upload" : "Back to repository"}
                     </button>
                     <div className="flex items-center gap-3">
-                        <h1 className="text-2xl font-bold text-[#1E3A8A]">Research metadata</h1>
+                        <h1 className="text-2xl font-bold text-[#1E3A8A]">
+                            {fromUpload ? "AI metadata draft" : "Research metadata"}
+                        </h1>
                         <StatusBadge status={document.status} />
                     </div>
                     <p className="mt-1 text-sm text-gray-500">
-                        Edit structured metadata, public visibility, and SDG classification.
+                        {fromUpload
+                            ? "Gemini is extracting suggestions into this editable draft. Review before saving."
+                            : "Edit structured metadata, public visibility, and SDG classification."}
                     </p>
                 </div>
                 <div className="flex gap-2">
