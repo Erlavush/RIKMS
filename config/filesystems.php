@@ -32,7 +32,7 @@ return [
 
         'documents' => [
             'driver' => 'local',
-            'root' => env('DOCUMENTS_ROOT', storage_path('app/private')),
+            'root' => env('DOCUMENTS_ROOT') ?: storage_path('app/private'),
             // Private research files must only leave storage through the
             // authorization and grant checks in DocumentDownloadService.
             'serve' => false,

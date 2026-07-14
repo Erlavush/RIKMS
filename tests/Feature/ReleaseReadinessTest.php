@@ -24,6 +24,11 @@ class ReleaseReadinessTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_blank_documents_root_falls_back_to_private_storage(): void
+    {
+        $this->assertSame(storage_path('app/private'), config('filesystems.disks.documents.root'));
+    }
+
     public function test_public_endpoints_do_not_expose_unpublished_records_or_private_metadata(): void
     {
         [$agency, $uploader] = $this->agencyAccount('privacy');
