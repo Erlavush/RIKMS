@@ -20,6 +20,205 @@ ROUTE_MAP_FILE = 'route-map.json'
 
 ACTIVE_DASHBOARD_PORT = 8888
 
+def load_env_file():
+    env_vars = {}
+    if os.path.exists('.env'):
+        try:
+            with open('.env', 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' in line:
+                        key, val = line.split('=', 1)
+                        env_vars[key.strip()] = val.strip().strip('"').strip("'")
+        except Exception:
+            pass
+    return env_vars
+
+def run_native_security_scan(target_url):
+    print("\n=======================================================")
+    print(f"[Native DAST] Starting lightweight Python-based boundary audit on target {target_url}...")
+    print("=======================================================")
+    
+    results = []
+    
+    def add_check(check_id, name, description, status, severity, observed, owasp):
+        results.append({
+            "id": check_id,
+            "name": name,
+            "description": description,
+            "status": status,
+            "severity": severity,
+            "observed": observed,
+            "owasp": owasp
+        })
+
+    import urllib.request
+    import urllib.error
+    from urllib.parse import urlparse
+    
+    if not target_url.startswith("http://") and not target_url.startswith("https://"):
+        target_url = "http://" + target_url
+
+    # Check 1: Connectivity & Security Headers
+    try:
+        req = urllib.request.Request(target_url, headers={'User-Agent': 'RIKMS Security Tester/1.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            headers = response.info()
+            
+            # X-Content-Type-Options
+            x_content_type = headers.get('X-Content-Type-Options', '')
+            if x_content_type.lower() == 'nosniff':
+                add_check("SEC-001", "MIME Sniffing Protection", "X-Content-Type-Options must be set to 'nosniff'.", "Passed", "Medium", "Header set to 'nosniff'", "A05:2021-Security Misconfiguration")
+            else:
+                add_check("SEC-001", "MIME Sniffing Protection", "X-Content-Type-Options must be set to 'nosniff'.", "Failed", "Medium", f"Header is '{x_content_type}' or missing.", "A05:2021-Security Misconfiguration")
+                
+            # X-Frame-Options
+            x_frame = headers.get('X-Frame-Options', '')
+            if x_frame.upper() in ['DENY', 'SAMEORIGIN']:
+                add_check("SEC-002", "Clickjacking Protection", "X-Frame-Options must be 'DENY' or 'SAMEORIGIN'.", "Passed", "Medium", f"Header set to '{x_frame}'", "A05:2021-Security Misconfiguration")
+            else:
+                add_check("SEC-002", "Clickjacking Protection", "X-Frame-Options must be 'DENY' or 'SAMEORIGIN' to prevent frame-hijacking.", "Failed", "Medium", f"Header is '{x_frame}' or missing.", "A05:2021-Security Misconfiguration")
+                
+            # Content-Security-Policy (CSP)
+            csp = headers.get('Content-Security-Policy', '')
+            if csp:
+                add_check("SEC-003", "Content Security Policy (CSP)", "Ensures CSP is enforced to mitigate XSS.", "Passed", "High", f"CSP present: {csp[:50]}...", "A03:2021-Injection")
+            else:
+                add_check("SEC-003", "Content Security Policy (CSP)", "CSP header is missing. A strong CSP is required to restrict unauthorized assets.", "Failed", "High", "No CSP header found.", "A03:2021-Injection")
+                
+            # Strict-Transport-Security (HSTS)
+            if target_url.startswith("https://"):
+                hsts = headers.get('Strict-Transport-Security', '')
+                if hsts:
+                    add_check("SEC-004", "HTTP Strict Transport Security (HSTS)", "Enforces HTTPS connections to protect against downgrades.", "Passed", "Medium", f"HSTS set: {hsts}", "A05:2021-Security Misconfiguration")
+                else:
+                    add_check("SEC-004", "HTTP Strict Transport Security (HSTS)", "HSTS is missing. Safe transport is not strictly enforced.", "Failed", "Medium", "HSTS header missing.", "A05:2021-Security Misconfiguration")
+            else:
+                add_check("SEC-004", "HTTP Strict Transport Security (HSTS)", "HSTS check skipped for plain HTTP connection.", "Warning", "Info", "Target is plain HTTP, cannot enforce HSTS.", "A05:2021-Security Misconfiguration")
+                
+            # Server / Power Info exposure
+            server = headers.get('Server', '')
+            powered_by = headers.get('X-Powered-By', '')
+            exposed_info = []
+            if server: exposed_info.append(f"Server: {server}")
+            if powered_by: exposed_info.append(f"X-Powered-By: {powered_by}")
+            
+            if exposed_info:
+                add_check("SEC-005", "Information Exposure: Server Headers", "Ensures server version info or backend tech stack is not disclosed.", "Warning", "Low", ", ".join(exposed_info), "A01:2021-Broken Access Control")
+            else:
+                add_check("SEC-005", "Information Exposure: Server Headers", "No software versions disclosed in headers.", "Passed", "Low", "No Server/X-Powered-By exposure", "A01:2021-Broken Access Control")
+                
+    except Exception as e:
+        add_check("SEC-000", "Target Connectivity Check", "Target must be accessible over the network.", "Failed", "High", f"Connection error: {e}", "A05:2021-Security Misconfiguration")
+        try:
+            with open('native-report.json', 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=4)
+        except Exception:
+            pass
+        return
+
+    # Check 2: CORS Verification
+    try:
+        req = urllib.request.Request(
+            target_url, 
+            headers={
+                'User-Agent': 'RIKMS Security Tester/1.0',
+                'Origin': 'https://evil-attacker.com'
+            }
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            headers = response.info()
+            allow_origin = headers.get('Access-Control-Allow-Origin', '')
+            allow_creds = headers.get('Access-Control-Allow-Credentials', '')
+            
+            if allow_origin == 'https://evil-attacker.com' or allow_origin == '*':
+                if allow_creds.lower() == 'true' or allow_origin == '*':
+                    add_check("SEC-006", "CORS Configuration", "Checks for insecure Cross-Origin Resource Sharing settings.", "Failed", "High", f"Insecure CORS allowed: Access-Control-Allow-Origin={allow_origin}, Credentials={allow_creds}", "A05:2021-Security Misconfiguration")
+                else:
+                    add_check("SEC-006", "CORS Configuration", "Checks for insecure Cross-Origin Resource Sharing settings.", "Warning", "Medium", f"Origin echoed back without credentials: Origin={allow_origin}", "A05:2021-Security Misconfiguration")
+            else:
+                add_check("SEC-006", "CORS Configuration", "CORS configuration restricts unauthorized cross-origin requests.", "Passed", "Medium", "Origin not echoed back.", "A05:2021-Security Misconfiguration")
+    except Exception:
+        add_check("SEC-006", "CORS Configuration", "CORS requests from evil-attacker.com were rejected or ignored.", "Passed", "Medium", "Request rejected/no CORS headers.", "A05:2021-Security Misconfiguration")
+
+    # Check 3: Information Exposure (Probing files)
+    probes = [
+        (".env", "/.env", 404, "High", "Critical application configuration and credentials"),
+        ("Composer Config", "/composer.json", 404, "Medium", "Lists backend project packages and versions"),
+        ("NPM Config", "/package.json", 404, "Medium", "Lists frontend project packages and versions"),
+        ("Laravel Logs", "/storage/logs/laravel.log", 404, "High", "Application execution logs containing potential secrets"),
+        ("Vendor Directory", "/vendor/", 404, "Medium", "Backend dependency folder structures"),
+        ("Public API Auth check", "/api/rikms/agency/documents", 401, "High", "Authenticated private document route"),
+        ("Admin Route check", "/api/rikms/admin/users", 401, "High", "Super-admin dashboard endpoints")
+    ]
+    
+    for label, path, expected_status, severity, description in probes:
+        probe_url = target_url.rstrip("/") + path
+        try:
+            req = urllib.request.Request(probe_url, headers={'User-Agent': 'RIKMS Security Tester/1.0'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                status = response.status
+                if status == 200:
+                    add_check(
+                        "SEC-007", 
+                        f"Information Exposure: {label}", 
+                        f"Verifies that {description} is inaccessible to public users.", 
+                        "Failed", 
+                        severity, 
+                        f"Exposed! Path returned HTTP {status}.", 
+                        "A01:2021-Broken Access Control"
+                    )
+                else:
+                    add_check(
+                        "SEC-007", 
+                        f"Information Exposure: {label}", 
+                        f"Verifies that {description} is inaccessible to public users.", 
+                        "Passed", 
+                        severity, 
+                        f"Path blocked. Returned HTTP {status}.", 
+                        "A01:2021-Broken Access Control"
+                    )
+        except urllib.error.HTTPError as e:
+            if e.code == expected_status or e.code in [401, 403, 404]:
+                add_check(
+                    "SEC-007", 
+                    f"Information Exposure: {label}", 
+                    f"Verifies that {description} is inaccessible to public users.", 
+                    "Passed", 
+                    severity, 
+                    f"Blocked correctly. Returned HTTP {e.code}", 
+                    "A01:2021-Broken Access Control"
+                )
+            else:
+                add_check(
+                    "SEC-007", 
+                    f"Information Exposure: {label}", 
+                    f"Verifies that {description} is inaccessible to public users.", 
+                    "Failed", 
+                    severity, 
+                    f"Unexpected status: Path returned HTTP {e.code} instead of expected {expected_status}.", 
+                    "A01:2021-Broken Access Control"
+                )
+        except Exception as e:
+            add_check(
+                "SEC-007", 
+                f"Information Exposure: {label}", 
+                f"Verifies that {description} is inaccessible to public users.", 
+                "Warning", 
+                severity, 
+                f"Check failed due to error: {e}", 
+                "A01:2021-Broken Access Control"
+            )
+
+    try:
+        with open('native-report.json', 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=4)
+        print("[Native DAST] Native security boundary checks completed successfully. Saved to native-report.json")
+    except Exception as e:
+        print(f"[Native DAST] Error saving native-report.json: {e}")
+
 # ----------------- SCAN RUNNER AUTOMATION -----------------
 def run_background_scans():
     # 0. Run PHPUnit Functional & Security Tests
@@ -139,31 +338,49 @@ def run_background_scans():
         print("=======================================================\n")
         return
         
-    dashboard_port = ACTIVE_DASHBOARD_PORT
-    running_port = None
-    target_host = "127.0.0.1"
+    # Load environment variables to check for remote pentest target
+    env_vars = load_env_file()
+    target_url = env_vars.get('PENTEST_TARGET') or env_vars.get('APP_URL')
     
-    # Check if target app is running (on 8000 or 8080) and make sure it is not our dashboard port
-    for port in [8000, 8080]:
-        if port == dashboard_port:
-            continue
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1)
-        res_conn = s.connect_ex((target_host, port))
-        s.close()
-        if res_conn == 0:
-            running_port = port
-            break
+    if target_url:
+        if not target_url.startswith("http://") and not target_url.startswith("https://"):
+            target_url = "http://" + target_url
             
-    if not running_port:
-        print("\n=======================================================")
-        print("[DAST] Target web application is not running (checked ports 8000 and 8080).")
-        print("[DAST] Skipping automated ZAP scan. ZAP requires the application to be running.")
-        print("[DAST] Please start the Laravel application first (e.g. 'php artisan serve').")
-        print("=======================================================\n")
-        return
+    is_remote = False
+    if target_url:
+        parsed = urlparse(target_url)
+        host = parsed.hostname or ""
+        if host and host != "127.0.0.1" and host != "localhost":
+            is_remote = True
+
+    dashboard_port = ACTIVE_DASHBOARD_PORT
+    
+    if not is_remote:
+        # Fallback to local port detection if target is local or not specified
+        running_port = None
+        target_host = "127.0.0.1"
+        for port in [8000, 8080]:
+            if port == dashboard_port:
+                continue
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            res_conn = s.connect_ex((target_host, port))
+            s.close()
+            if res_conn == 0:
+                running_port = port
+                break
+                
+        if not running_port:
+            print("\n=======================================================")
+            print("[DAST] Target web application is not running (checked ports 8000 and 8080).")
+            print("[DAST] Skipping automated ZAP scan. ZAP requires the application to be running.")
+            print("[DAST] Please start the Laravel application first (e.g. 'php artisan serve').")
+            print("=======================================================\n")
+            return
+        target_url = f"http://{target_host}:{running_port}"
         
-    target_url = f"http://{target_host}:{running_port}"
+    # Run native Python security scan on the finalized target URL
+    run_native_security_scan(target_url)
     print("\n=======================================================")
     print(f"[DAST] OWASP ZAP found at: {zap_bin}")
     print(f"[DAST] Starting automated ZAP quick scan on target {target_url}...")
@@ -322,6 +539,16 @@ def parse_npm_audit(file_path):
         print(f"Error parsing NPM audit: {e}")
         return []
 
+def parse_native_json(file_path):
+    if not os.path.exists(file_path):
+        return []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error parsing native report: {e}")
+        return []
+
 def parse_zap_json(file_path):
     if not os.path.exists(file_path):
         return None
@@ -384,6 +611,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 'composer': composer_vulns or [],
                 'npm': npm_vulns or []
             }).encode('utf-8'))
+        elif parsed_path.path == '/api/native':
+            results = parse_native_json('native-report.json')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(results or []).encode('utf-8'))
         elif parsed_path.path == '/' or parsed_path.path == '/index.html':
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
@@ -991,6 +1224,9 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     <div style="font-size: 0.9rem; color: var(--text-secondary);">
                         <strong>Security Config (DAST):</strong> <span id="summary-dast-status">N/A</span>
                     </div>
+                    <div style="font-size: 0.9rem; color: var(--text-secondary);">
+                        <strong>Boundary Audit (Native):</strong> <span id="summary-native-status">N/A</span>
+                    </div>
                 </div>
             </div>
         </section>
@@ -1000,6 +1236,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             <button class="tab-btn" onclick="switchTab('larastan')">SAST (Larastan)</button>
             <button class="tab-btn" onclick="switchTab('zap')">DAST (OWASP ZAP)</button>
             <button class="tab-btn" onclick="switchTab('sca')">Supply Chain (SCA)</button>
+            <button class="tab-btn" onclick="switchTab('native')">Boundary Audit (Native)</button>
         </div>
 
         <!-- ================= PHPUNIT TAB ================= -->
@@ -1271,6 +1508,50 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </section>
         </div>
+
+        <!-- ================= NATIVE BOUNDARY AUDIT TAB ================= -->
+        <div id="tab-native" class="tab-content">
+            <section class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">Total Probes Run</div>
+                    <div class="metric-value" id="native-total-count">0</div>
+                    <div class="metric-subtext">Active boundary tests</div>
+                </div>
+                <div class="metric-card passed">
+                    <div class="metric-label">Passed</div>
+                    <div class="metric-value" id="native-passed-count" style="color: var(--color-passed);">0</div>
+                    <div class="metric-subtext">Secure configurations</div>
+                </div>
+                <div class="metric-card" id="native-failed-card">
+                    <div class="metric-label">Failed / Warnings</div>
+                    <div class="metric-value" id="native-failed-count" style="color: var(--color-failed);">0</div>
+                    <div class="metric-subtext">Need remediation</div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <h2>Native Boundary Verification Checks</h2>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 10%;">ID</th>
+                                <th style="width: 25%;">Check Title</th>
+                                <th style="width: 10%;">Status</th>
+                                <th style="width: 10%;">Severity</th>
+                                <th>Observed Behaviour & Guidance</th>
+                            </tr>
+                        </thead>
+                        <tbody id="nativeTableBody"></tbody>
+                    </table>
+                </div>
+                <div id="native-no-data" class="no-data-msg" style="display: none;">
+                    No native security reports detected. Run scan to populate.
+                </div>
+            </section>
+        </div>
     </div>
 
     <script>
@@ -1279,6 +1560,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         let larastanData = null;
         let zapData = [];
         let scaData = { composer: [], npm: [] };
+        let nativeData = [];
 
         // Chart instances
         let testPieInstance = null;
@@ -1441,21 +1723,88 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 loadTestData(),
                 loadLarastanData(),
                 loadZapData(),
-                loadScaData()
+                loadScaData(),
+                loadNativeData()
             ]);
             calculateExecutiveHealth();
+        }
+
+        // --- NATIVE SECURITY AUDIT LOGIC ---
+        async function loadNativeData() {
+            try {
+                const response = await fetch('/api/native');
+                nativeData = (await response.json()) || [];
+                renderNativeMetrics();
+                renderNativeTable(nativeData);
+            } catch (e) {
+                console.error("Failed to load native security results:", e);
+                nativeData = [];
+            }
+        }
+
+        function renderNativeMetrics() {
+            const total = nativeData.length;
+            const passed = nativeData.filter(d => d.status === 'Passed').length;
+            const failed = nativeData.filter(d => d.status === 'Failed' || d.status === 'Warning').length;
+
+            document.getElementById('native-total-count').innerText = total;
+            document.getElementById('native-passed-count').innerText = passed;
+            document.getElementById('native-failed-count').innerText = failed;
+            
+            const failedCard = document.getElementById('native-failed-card');
+            if (failed > 0) {
+                failedCard.style.borderLeft = '4px solid var(--color-failed)';
+            } else {
+                failedCard.style.borderLeft = '4px solid var(--color-passed)';
+            }
+        }
+
+        function renderNativeTable(data) {
+            const tbody = document.getElementById('nativeTableBody');
+            const noDataEl = document.getElementById('native-no-data');
+            
+            tbody.innerHTML = '';
+            
+            if (!data || data.length === 0) {
+                noDataEl.style.display = 'block';
+                return;
+            } else {
+                noDataEl.style.display = 'none';
+            }
+
+            data.forEach(item => {
+                const tr = document.createElement('tr');
+                const badgeClass = item.status.toLowerCase();
+                const severityClass = item.severity.toLowerCase();
+
+                tr.innerHTML = `
+                    <td class="code-path">${escapeHtml(item.id)}</td>
+                    <td>
+                        <div style="font-weight: 600; color: #fff; margin-bottom: 0.25rem;">${escapeHtml(item.name)}</div>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary);">${escapeHtml(item.description)}</div>
+                    </td>
+                    <td><span class="badge ${badgeClass}">${item.status}</span></td>
+                    <td><span class="badge ${severityClass}">${item.severity}</span></td>
+                    <td>
+                        <div style="margin-bottom: 0.25rem;"><strong>Observed:</strong> ${escapeHtml(item.observed)}</div>
+                        <div style="font-size: 0.8rem; color: #a5b4fc; margin-top: 0.25rem;"><strong>OWASP Category:</strong> ${escapeHtml(item.owasp)}</div>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
         }
 
         // --- PHPUNIT LOGIC ---
         async function loadTestData() {
             try {
                 const response = await fetch('/api/results');
-                testData = await response.json();
+                testData = (await response.json()) || [];
                 renderTestMetrics();
                 renderTestCharts();
                 renderTestTable(testData);
             } catch (e) {
                 console.error("Failed to load PHPUnit results:", e);
+                testData = [];
             }
         }
 
@@ -1572,12 +1921,12 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         async function loadLarastanData() {
             try {
                 const response = await fetch('/api/larastan');
-                larastanData = await response.json();
+                larastanData = (await response.json()) || { errors: [] };
                 
                 const wrapper = document.getElementById('larastan-table-wrapper');
                 const nodata = document.getElementById('larastan-no-data');
                 
-                if (!larastanData || Object.keys(larastanData).length === 0) {
+                if (!larastanData || !larastanData.errors || Object.keys(larastanData).length === 0) {
                     wrapper.style.display = 'none';
                     nodata.style.display = 'block';
                     document.getElementById('sast-errors').innerText = '0';
@@ -1668,7 +2017,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         async function loadZapData() {
             try {
                 const response = await fetch('/api/zap');
-                zapData = await response.json();
+                zapData = (await response.json()) || [];
                 
                 const wrapper = document.getElementById('zap-table-wrapper');
                 const nodata = document.getElementById('zap-no-data');
@@ -1705,7 +2054,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         async function loadScaData() {
             try {
                 const response = await fetch('/api/sca');
-                scaData = await response.json();
+                scaData = (await response.json()) || { composer: [], npm: [] };
                 
                 const composerCount = (scaData.composer || []).length;
                 const npmCount = (scaData.npm || []).length;
@@ -1922,7 +2271,30 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 document.getElementById('summary-dast-status').style.color = "var(--text-secondary)";
             }
 
+            // 4. Native Boundary Audit (deducts from overall score if they fail)
+            let nativeFailed = nativeData.filter(d => d.status === 'Failed').length;
+            let nativeWarnings = nativeData.filter(d => d.status === 'Warning').length;
+
+            const nativeStatusEl = document.getElementById('summary-native-status');
+            if (nativeData.length > 0) {
+                if (nativeFailed > 0) {
+                    nativeStatusEl.innerText = `At Risk (${nativeFailed} Failures)`;
+                    nativeStatusEl.style.color = "var(--color-failed)";
+                    summaryText += `Boundary audit detected ${nativeFailed} configuration failure(s). `;
+                } else if (nativeWarnings > 0) {
+                    nativeStatusEl.innerText = `Warning (${nativeWarnings} Warnings)`;
+                    nativeStatusEl.style.color = "var(--color-skipped)";
+                } else {
+                    nativeStatusEl.innerText = "Passed (Secure)";
+                    nativeStatusEl.style.color = "var(--color-passed)";
+                }
+            } else {
+                nativeStatusEl.innerText = "No Scan";
+                nativeStatusEl.style.color = "var(--text-secondary)";
+            }
+
             score = testSubScore + sastSubScore + dastSubScore;
+            score = Math.max(0, score - (nativeFailed * 5) - (nativeWarnings * 2));
 
             // Health description writing
             if (score >= 90) {
