@@ -115,5 +115,14 @@
         "severity": "High",
         "observed": "Blocked correctly. Returned HTTP 404",
         "owasp": "A01:2021-Broken Access Control"
+    },
+    {
+        "id": "SEC-008",
+        "name": "Authenticated Scanning",
+        "description": "Verifies deep authenticated application features.",
+        "status": "Warning",
+        "severity": "Medium",
+        "observed": "Skipped: Could not authenticate as test@example.com. Ensure credentials exist and app is running.",
+        "owasp": "A01:2021-Broken Access Control"
     }
 ]

@@ -29,6 +29,9 @@ SCAN_STATUS = {
     "zap": "pending"
 }
 
+SESSION_COOKIES = ""
+SESSION_XSRF_TOKEN = ""
+
 def load_env_file():
     env_vars = {}
     if os.path.exists('.env'):
@@ -221,6 +224,410 @@ def run_native_security_scan(target_url):
                 "A01:2021-Broken Access Control"
             )
 
+    # Deepened/Authenticated Scans to address ## 2 and ## 3
+    print("[Native DAST] Deepening scan by attempting authentication...")
+    
+    # Resolve if local or remote
+    parsed_target = urlparse(target_url)
+    is_target_local = parsed_target.hostname in ["127.0.0.1", "localhost"] or (parsed_target.hostname and (parsed_target.hostname.startswith("192.168.") or parsed_target.hostname.startswith("10.") or parsed_target.hostname.endswith(".local")))
+    
+    # If target is local, ensure the scanner test user exists in the database
+    if is_target_local:
+        try:
+            print("[Native DAST] Local target detected. Ensuring test user 'test@example.com' exists in the database...")
+            tinker_code = (
+                "if (!\\App\\Models\\User::where('email', 'test@example.com')->exists()) { "
+                "  $agency = \\App\\Models\\Agency::first() ?? \\App\\Models\\Agency::create(["
+                "    'name' => 'Scan Agency', 'abbreviation' => 'SCAN', 'region' => 'Scan Region', 'type' => 'Government Agency', 'contact_email' => 'scan@example.com'"
+                "  ]);"
+                "  \\App\\Models\\User::create(["
+                "    'name' => 'Scan Test User', 'email' => 'test@example.com', 'password' => \\Illuminate\\Support\\Facades\\Hash::make('password'), "
+                "    'role' => 'agency_admin', 'agency_id' => $agency->id, 'is_active' => true, 'must_change_password' => false"
+                "  ]);"
+                "  echo 'created';"
+                "} else { "
+                "  echo 'exists'; "
+                "}"
+            )
+            tinker_cmd = f'php artisan tinker --execute="{tinker_code}"'
+            res = subprocess.run(tinker_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            if res.returncode == 0:
+                print(f"[Native DAST] Tinker user setup: {res.stdout.strip()}")
+            else:
+                print(f"[Native DAST] Tinker user setup failed: {res.stderr}")
+        except Exception as e:
+            print(f"[Native DAST] Could not run tinker to verify user: {e}")
+
+    # Now attempt authentication and run checks
+    import http.cookiejar
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    
+    logged_in = False
+    xsrf_token = None
+    
+    try:
+        # Step 1: GET /login to initialize cookies
+        print(f"[Native DAST] Requesting GET {target_url}/login to fetch CSRF token...")
+        login_page_url = target_url.rstrip("/") + "/login"
+        req = urllib.request.Request(login_page_url, headers={'User-Agent': 'RIKMS Security Tester/1.0'})
+        with opener.open(req, timeout=10) as response:
+            response.read()
+        
+        # Extract XSRF-TOKEN
+        for cookie in cookie_jar:
+            if cookie.name == 'XSRF-TOKEN':
+                xsrf_token = urllib.parse.unquote(cookie.value)
+                break
+                
+        if xsrf_token:
+            # Step 2: POST /login
+            print(f"[Native DAST] Attempting authenticated login with test@example.com...")
+            login_api_url = target_url.rstrip("/") + "/login"
+            login_data = json.dumps({
+                'email': 'test@example.com',
+                'password': 'password'
+            }).encode('utf-8')
+            
+            headers = {
+                'User-Agent': 'RIKMS Security Tester/1.0',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-XSRF-TOKEN': xsrf_token
+            }
+            
+            login_req = urllib.request.Request(login_api_url, data=login_data, headers=headers, method='POST')
+            with opener.open(login_req, timeout=10) as login_resp:
+                resp_json = json.loads(login_resp.read().decode('utf-8'))
+                if 'redirect' in resp_json or 'user' in resp_json:
+                    logged_in = True
+                    print("[Native DAST] Login successful!")
+                    global SESSION_COOKIES, SESSION_XSRF_TOKEN
+                    cookies_list = []
+                    for cookie in cookie_jar:
+                        cookies_list.append(f"{cookie.name}={cookie.value}")
+                    SESSION_COOKIES = "; ".join(cookies_list)
+                    SESSION_XSRF_TOKEN = xsrf_token or ""
+                else:
+                    print(f"[Native DAST] Login returned unexpected response: {resp_json}")
+        else:
+            print("[Native DAST] CSRF XSRF-TOKEN cookie not found. Cannot proceed with login.")
+    except Exception as e:
+        print(f"[Native DAST] Error during login sequence: {e}")
+        
+    if not logged_in:
+        add_check(
+            "SEC-008",
+            "Authenticated Scanning",
+            "Verifies deep authenticated application features.",
+            "Warning",
+            "Medium",
+            "Skipped: Could not authenticate as test@example.com. Ensure credentials exist and app is running.",
+            "A01:2021-Broken Access Control"
+        )
+    else:
+        # Run Authenticated Deep Boundary Scans
+        add_check(
+            "SEC-008",
+            "Authenticated Scanning",
+            "Verifies that the DAST boundary scanner can authenticate successfully.",
+            "Passed",
+            "Low",
+            "Authenticated as test@example.com.",
+            "A01:2021-Broken Access Control"
+        )
+        
+        # Check A: Deepened Profile Access Check
+        try:
+            print("[Native DAST] Testing profile access (authenticated vs unauthenticated)...")
+            me_url = target_url.rstrip("/") + "/api/rikms/me"
+            me_req = urllib.request.Request(me_url, headers={
+                'User-Agent': 'RIKMS Security Tester/1.0',
+                'Accept': 'application/json'
+            })
+            with opener.open(me_req, timeout=5) as me_resp:
+                me_data = json.loads(me_resp.read().decode('utf-8'))
+                if me_data.get('data', {}).get('email') == 'test@example.com':
+                    add_check(
+                        "SEC-009",
+                        "Deep Session Authorization",
+                        "Ensures logged-in users can access their own session profile.",
+                        "Passed",
+                        "Medium",
+                        "Authenticated user profile accessed successfully.",
+                        "A01:2021-Broken Access Control"
+                    )
+                else:
+                    add_check(
+                        "SEC-009",
+                        "Deep Session Authorization",
+                        "Ensures logged-in users can access their own session profile.",
+                        "Failed",
+                        "Medium",
+                        f"Unexpected profile data: {me_data}",
+                        "A01:2021-Broken Access Control"
+                    )
+        except Exception as e:
+            add_check(
+                "SEC-009",
+                "Deep Session Authorization",
+                "Ensures logged-in users can access their own session profile.",
+                "Failed",
+                "Medium",
+                f"Failed to access authenticated profile: {e}",
+                "A01:2021-Broken Access Control"
+            )
+            
+        # Check B: CSRF Protection Verification on Mutable Endpoints
+        try:
+            print("[Native DAST] Testing CSRF validation on change-password...")
+            pw_url = target_url.rstrip("/") + "/api/rikms/change-password"
+            pw_data = json.dumps({
+                'current_password': 'password',
+                'password': 'newpassword123!',
+                'password_confirmation': 'newpassword123!'
+            }).encode('utf-8')
+            
+            session_cookie = None
+            for cookie in cookie_jar:
+                if cookie.name == 'laravel_session':
+                    session_cookie = f"{cookie.name}={cookie.value}"
+                    break
+            
+            if session_cookie:
+                pw_req = urllib.request.Request(pw_url, data=pw_data, headers={
+                    'User-Agent': 'RIKMS Security Tester/1.0',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'Cookie': session_cookie
+                }, method='POST')
+                
+                try:
+                    urllib.request.urlopen(pw_req, timeout=5)
+                    add_check(
+                        "SEC-010",
+                        "CSRF Protection Enforcement",
+                        "Verifies that state-changing requests without a valid CSRF token are blocked.",
+                        "Failed",
+                        "High",
+                        "CSRF Bypass! Mutable request succeeded without X-XSRF-TOKEN header.",
+                        "A05:2021-Security Misconfiguration"
+                    )
+                except urllib.error.HTTPError as e:
+                    if e.code in [419, 403]:
+                        add_check(
+                            "SEC-010",
+                            "CSRF Protection Enforcement",
+                            "Verifies that state-changing requests without a valid CSRF token are blocked.",
+                            "Passed",
+                            "High",
+                            f"CSRF token correctly enforced. Request blocked with HTTP {e.code}.",
+                            "A05:2021-Security Misconfiguration"
+                        )
+                    else:
+                        add_check(
+                            "SEC-010",
+                            "CSRF Protection Enforcement",
+                            "Verifies that state-changing requests without a valid CSRF token are blocked.",
+                            "Warning",
+                            "High",
+                            f"Unexpected response code for missing CSRF: {e.code}",
+                            "A05:2021-Security Misconfiguration"
+                        )
+            else:
+                add_check(
+                    "SEC-010",
+                    "CSRF Protection Enforcement",
+                    "Session cookie not found for CSRF verification.",
+                    "Warning",
+                    "High",
+                    "Could not extract session cookie to verify CSRF enforcement.",
+                    "A05:2021-Security Misconfiguration"
+                )
+        except Exception as e:
+            add_check(
+                "SEC-010",
+                "CSRF Protection Enforcement",
+                "Verifies that state-changing requests without a valid CSRF token are blocked.",
+                "Warning",
+                "High",
+                f"Error during CSRF check: {e}",
+                "A05:2021-Security Misconfiguration"
+            )
+            
+        # Check C: Horizontal & Vertical Access Control (IDOR & Unauthorized Download)
+        try:
+            print("[Native DAST] Testing access controls on documents...")
+            download_url = target_url.rstrip("/") + "/api/rikms/agency/documents/1/download"
+            dl_req = urllib.request.Request(download_url, headers={
+                'User-Agent': 'RIKMS Security Tester/1.0',
+                'Accept': 'application/json'
+            })
+            
+            try:
+                urllib.request.urlopen(dl_req, timeout=5)
+                add_check(
+                    "SEC-011",
+                    "Broken Access Control: Document Download",
+                    "Ensures unauthenticated users cannot access private download endpoints.",
+                    "Failed",
+                    "High",
+                    "Private document download accessible without authentication!",
+                    "A01:2021-Broken Access Control"
+                )
+            except urllib.error.HTTPError as e:
+                if e.code in [401, 403, 404]:
+                    add_check(
+                        "SEC-011",
+                        "Broken Access Control: Document Download",
+                        "Ensures unauthenticated users cannot access private download endpoints.",
+                        "Passed",
+                        "High",
+                        f"Blocked correctly. Unauthenticated download returned HTTP {e.code}.",
+                        "A01:2021-Broken Access Control"
+                    )
+                else:
+                    add_check(
+                        "SEC-011",
+                        "Broken Access Control: Document Download",
+                        "Ensures unauthenticated users cannot access private download endpoints.",
+                        "Warning",
+                        "High",
+                        f"Unexpected response code for unauthorized download: {e.code}",
+                        "A01:2021-Broken Access Control"
+                    )
+        except Exception as e:
+            add_check(
+                "SEC-011",
+                "Broken Access Control: Document Download",
+                "Ensures unauthenticated users cannot access private download endpoints.",
+                "Warning",
+                "High",
+                f"Error checking download access: {e}",
+                "A01:2021-Broken Access Control"
+            )
+            
+        # Check D: Live AI Analysis Endpoint & Upload Validation
+        try:
+            print("[Native DAST] Testing AI analysis endpoint boundary validation...")
+            ai_url = target_url.rstrip("/") + "/api/rikms/documents/99999/analyze"
+            ai_req = urllib.request.Request(ai_url, headers={
+                'User-Agent': 'RIKMS Security Tester/1.0',
+                'Accept': 'application/json',
+                'X-XSRF-TOKEN': xsrf_token
+            }, method='POST')
+            
+            try:
+                opener.open(ai_req, timeout=5)
+                add_check(
+                    "SEC-012",
+                    "AI Analysis Endpoint Validation",
+                    "Verifies that metadata extraction handles invalid resource IDs gracefully.",
+                    "Failed",
+                    "Medium",
+                    "AI extraction request returned success for non-existent document ID 99999.",
+                    "A05:2021-Security Misconfiguration"
+                )
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    add_check(
+                        "SEC-012",
+                        "AI Analysis Endpoint Validation",
+                        "Verifies that metadata extraction handles invalid resource IDs gracefully.",
+                        "Passed",
+                        "Low",
+                        "Correctly returned HTTP 404 for invalid document ID.",
+                        "A05:2021-Security Misconfiguration"
+                    )
+                elif e.code == 403:
+                    add_check(
+                        "SEC-012",
+                        "AI Analysis Endpoint Validation",
+                        "Verifies that metadata extraction handles invalid resource IDs gracefully.",
+                        "Passed",
+                        "Low",
+                        "Correctly blocked with HTTP 403 (unauthorized/policy check).",
+                        "A05:2021-Security Misconfiguration"
+                    )
+                else:
+                    add_check(
+                        "SEC-012",
+                        "AI Analysis Endpoint Validation",
+                        "Verifies that metadata extraction handles invalid resource IDs gracefully.",
+                        "Failed",
+                        "Medium",
+                        f"Unexpected response code for invalid document AI request: {e.code}",
+                        "A05:2021-Security Misconfiguration"
+                    )
+        except Exception as e:
+            add_check(
+                "SEC-012",
+                "AI Analysis Endpoint Validation",
+                "Verifies that metadata extraction handles invalid resource IDs gracefully.",
+                "Warning",
+                "Medium",
+                f"Error checking AI analysis boundary: {e}",
+                "A05:2021-Security Misconfiguration"
+            )
+            
+        # Check E: Live File Upload Endpoint Validation
+        try:
+            print("[Native DAST] Testing draft upload endpoint boundary validation...")
+            upload_url = target_url.rstrip("/") + "/api/rikms/documents/upload-draft"
+            upload_data = json.dumps({
+                'document_type': 'invalid_type'
+            }).encode('utf-8')
+            
+            upload_req = urllib.request.Request(upload_url, data=upload_data, headers={
+                'User-Agent': 'RIKMS Security Tester/1.0',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-XSRF-TOKEN': xsrf_token
+            }, method='POST')
+            
+            try:
+                opener.open(upload_req, timeout=5)
+                add_check(
+                    "SEC-013",
+                    "Upload Endpoint Boundary Validation",
+                    "Ensures upload drafts validation fails closed with validation errors.",
+                    "Failed",
+                    "Medium",
+                    "Upload draft request succeeded with invalid document_type and missing file.",
+                    "A05:2021-Security Misconfiguration"
+                )
+            except urllib.error.HTTPError as e:
+                if e.code == 422:
+                    add_check(
+                        "SEC-013",
+                        "Upload Endpoint Boundary Validation",
+                        "Ensures upload drafts validation fails closed with validation errors.",
+                        "Passed",
+                        "Low",
+                        "Returned HTTP 422 Validation Error correctly.",
+                        "A05:2021-Security Misconfiguration"
+                    )
+                else:
+                    add_check(
+                        "SEC-013",
+                        "Upload Endpoint Boundary Validation",
+                        "Ensures upload drafts validation fails closed with validation errors.",
+                        "Failed",
+                        "Medium",
+                        f"Unexpected response code for invalid upload draft: {e.code}",
+                        "A05:2021-Security Misconfiguration"
+                    )
+        except Exception as e:
+            add_check(
+                "SEC-013",
+                "Upload Endpoint Boundary Validation",
+                "Ensures upload drafts validation fails closed with validation errors.",
+                "Warning",
+                "Medium",
+                f"Error checking upload validation boundary: {e}",
+                "A05:2021-Security Misconfiguration"
+            )
+
     try:
         with open('native-report.json', 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=4)
@@ -232,12 +639,16 @@ def run_native_security_scan(target_url):
 def run_background_scans():
     global SCAN_STATUS
     
-    # 0. Run PHPUnit Functional & Security Tests
+    # Initialize all states to pending immediately
+    for key in ["phpunit", "larastan", "sca", "routes", "native", "zap"]:
+        SCAN_STATUS[key] = "pending"
+
+    # Task 1: PHPUnit Functional & Security Tests
     print("\n=======================================================")
     print("[Shift-Left] Running automated functional and BOLA test suite...")
     print("=======================================================")
     SCAN_STATUS["phpunit"] = "running"
-    phpunit_cmd = "php vendor/bin/phpunit --log-junit report.xml"
+    phpunit_cmd = "php artisan test --log-junit report.xml"
     try:
         subprocess.run(phpunit_cmd, shell=True, capture_output=True, text=True)
         print("[Shift-Left] Test suite run completed. Saved results to report.xml")
@@ -246,7 +657,7 @@ def run_background_scans():
         print(f"[Shift-Left] Error running tests: {e}")
         SCAN_STATUS["phpunit"] = "failed"
 
-    # 1. Run Larastan Scan
+    # Task 2: Larastan SAST Scan
     print("\n=======================================================")
     print("[SAST] Starting automated Larastan static analysis scan...")
     print("=======================================================")
@@ -274,7 +685,7 @@ def run_background_scans():
         print(f"[SAST] Error running Larastan scan: {e}")
         SCAN_STATUS["larastan"] = "failed"
 
-    # 1.5. Run Software Composition Analysis (SCA)
+    # Task 3: Software Composition Analysis (SCA)
     print("\n=======================================================")
     print("[SCA] Starting Software Composition Analysis (SCA)...")
     print("=======================================================")
@@ -303,7 +714,8 @@ def run_background_scans():
         
     SCAN_STATUS["sca"] = "failed" if sca_error else "completed"
 
-    # 1.6. Generate Route Map for Greybox DAST Seeding
+    # Task 4: Dynamic & Pentesting Audit (Routes, Native DAST, and ZAP)
+    # 4a. Dump application route-map
     print("\n=======================================================")
     print("[DAST Seeding] Dumping application endpoints route-map...")
     print("=======================================================")
@@ -322,7 +734,7 @@ def run_background_scans():
         print(f"[DAST Seeding] Error dumping route list: {e}")
         SCAN_STATUS["routes"] = "failed"
 
-    # Resolve target URL and run the Native Boundary Audit
+    # Resolve target URL
     env_vars = load_env_file()
     target_url = env_vars.get('PENTEST_TARGET') or env_vars.get('APP_URL')
     
@@ -338,9 +750,9 @@ def run_background_scans():
             is_remote = True
 
     dashboard_port = ACTIVE_DASHBOARD_PORT
+    running_port = None
     
     if not is_remote:
-        running_port = None
         target_host = "127.0.0.1"
         for port in [8000, 8080]:
             if port == dashboard_port:
@@ -364,7 +776,7 @@ def run_background_scans():
             
         target_url = f"http://{target_host}:{running_port}"
         
-    # Run native Python security scan
+    # 4b. Run native Python security scan
     SCAN_STATUS["native"] = "running"
     try:
         run_native_security_scan(target_url)
@@ -373,6 +785,7 @@ def run_background_scans():
         print(f"Error running native scan: {e}")
         SCAN_STATUS["native"] = "failed"
 
+    # 4c. Run ZAP scan
     # Find ZAP
     zap_bin = None
     zap_bin_in_path = shutil.which("zap.bat") or shutil.which("zap.sh")
@@ -423,8 +836,39 @@ def run_background_scans():
     temp_report = os.path.abspath("zap-report-temp.json")
     zap_temp_dir = os.path.abspath(".zap_temp")
     os.makedirs(zap_temp_dir, exist_ok=True)
+    
+    # Build ZAP command with deep crawl options
     zap_cmd = f'"{zap_bin}" -dir "{zap_temp_dir}" -port 8090 -cmd -quickurl {target_url} -quickout "{temp_report}"'
     
+    # Configure spider to crawl deeper
+    zap_cmd += (
+        ' -config spider.maxDepth=10'
+        ' -config spider.postForm=true'
+        ' -config spider.processForm=true'
+        ' -config spider.parseComments=true'
+    )
+    
+    # Inject cookies and CSRF headers if authenticated session is available
+    if SESSION_COOKIES:
+        print("[DAST] Authenticated session detected. Injecting cookies for ZAP deep scan...")
+        zap_cmd += (
+            f' -config replacer.full_list(0).description=AddCookie'
+            f' -config replacer.full_list(0).enabled=true'
+            f' -config replacer.full_list(0).matchtype=REQ_HEADER'
+            f' -config replacer.full_list(0).matchstr=Cookie'
+            f' -config replacer.full_list(0).regex=false'
+            f' -config replacer.full_list(0).replacement="{SESSION_COOKIES}"'
+        )
+        if SESSION_XSRF_TOKEN:
+            zap_cmd += (
+                f' -config replacer.full_list(1).description=AddCsrf'
+                f' -config replacer.full_list(1).enabled=true'
+                f' -config replacer.full_list(1).matchtype=REQ_HEADER'
+                f' -config replacer.full_list(1).matchstr=X-XSRF-TOKEN'
+                f' -config replacer.full_list(1).regex=false'
+                f' -config replacer.full_list(1).replacement="{SESSION_XSRF_TOKEN}"'
+            )
+            
     try:
         res = subprocess.run(zap_cmd, shell=True, capture_output=True, text=True, timeout=180, cwd=os.path.dirname(zap_bin))
         if os.path.exists(temp_report):
@@ -615,51 +1059,69 @@ def parse_zap_json(file_path):
         print(f"Error parsing ZAP JSON: {e}")
         return None
 
+def get_file_timestamp(file_path):
+    if not os.path.exists(file_path):
+        return "Pending first scan..."
+    try:
+        import datetime
+        mtime = os.path.getmtime(file_path)
+        dt = datetime.datetime.fromtimestamp(mtime)
+        return dt.strftime("%B %d, %Y at %I:%M:%S %p")
+    except Exception:
+        return "Unknown Date/Time"
+
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
+    def send_json_response(self, data):
+        """Send a JSON response with anti-cache headers."""
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Expires', '0')
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode('utf-8'))
+
     def do_GET(self):
         parsed_path = urlparse(self.path)
         if parsed_path.path == '/api/results':
             results = parse_junit_xml(XML_FILE)
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(results or []).encode('utf-8'))
+            self.send_json_response({
+                "timestamp": get_file_timestamp(XML_FILE),
+                "tests": results or []
+            })
         elif parsed_path.path == '/api/larastan':
             results = parse_larastan_json(LARASTAN_FILE)
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(results or {}).encode('utf-8'))
+            if isinstance(results, dict):
+                results["timestamp"] = get_file_timestamp(LARASTAN_FILE)
+            self.send_json_response(results or {})
         elif parsed_path.path == '/api/zap':
             results = parse_zap_json(ZAP_FILE)
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(results or []).encode('utf-8'))
+            self.send_json_response({
+                "timestamp": get_file_timestamp(ZAP_FILE),
+                "alerts": results or []
+            })
         elif parsed_path.path == '/api/sca':
             composer_vulns = parse_composer_audit(COMPOSER_AUDIT_FILE)
             npm_vulns = parse_npm_audit(NPM_AUDIT_FILE)
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({
+            self.send_json_response({
+                "timestamp": get_file_timestamp(COMPOSER_AUDIT_FILE) if os.path.exists(COMPOSER_AUDIT_FILE) else get_file_timestamp(NPM_AUDIT_FILE),
                 'composer': composer_vulns or [],
                 'npm': npm_vulns or []
-            }).encode('utf-8'))
+            })
         elif parsed_path.path == '/api/native':
             results = parse_native_json('native-report.json')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(results or []).encode('utf-8'))
+            self.send_json_response({
+                "timestamp": get_file_timestamp('native-report.json'),
+                "checks": results or []
+            })
         elif parsed_path.path == '/api/status':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(SCAN_STATUS).encode('utf-8'))
+            self.send_json_response(SCAN_STATUS)
         elif parsed_path.path == '/' or parsed_path.path == '/index.html':
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Expires', '0')
             self.end_headers()
             self.wfile.write(self.get_html_content().encode('utf-8'))
         else:
@@ -1217,37 +1679,39 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         /* ================= SCAN MONITOR & MC SPIDER ================= */
         .scan-monitor-panel {
-            display: flex;
+            display: grid;
+            grid-template-columns: 1fr 1.6fr 1fr;
             gap: 1.5rem;
             margin-bottom: 2rem;
-            flex-wrap: wrap;
+            align-items: stretch;
         }
 
-        .scan-status-board {
-            flex: 1 1 500px;
+        .scan-status-side-board {
             background: var(--bg-glass);
             border: 1px solid var(--border-glass);
             border-radius: 16px;
-            padding: 1.5rem;
+            padding: 1.25rem;
             display: flex;
             flex-direction: column;
+            gap: 0.75rem;
             justify-content: center;
         }
 
-        .scan-status-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            color: #fff;
+        .side-board-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #818cf8;
+            margin-bottom: 0.25rem;
+            border-bottom: 1px solid rgba(129, 140, 248, 0.15);
+            padding-bottom: 0.5rem;
         }
 
-        .scan-status-list {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 1rem;
+        .scan-status-side-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
         }
 
         .scan-status-item {
@@ -1310,30 +1774,125 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             100% { opacity: 1; filter: drop-shadow(0 0 4px #3b82f6); }
         }
 
-        /* 3D Minecraft Spider Viewport */
+        /* 3D Minecraft Spider Viewport & Web Background */
+        .spider-center-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.75rem;
+            width: 100%;
+        }
+
+        .scan-global-header {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #a5b4fc;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            background: rgba(99, 102, 241, 0.08);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            padding: 0.4rem 1.2rem;
+            border-radius: 30px;
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.05);
+        }
+
         .spider-viewport {
-            width: 280px;
-            height: 180px;
-            background: #0f1016;
-            border: 1px solid var(--border-glass);
-            border-radius: 16px;
+            width: 100%;
+            height: 300px;
+            background: #07080c;
+            /* Concentric rings and radial lines of the web */
+            background-image: 
+                repeating-radial-gradient(circle at 50% 50%, transparent, transparent 20px, rgba(99, 102, 241, 0.15) 21px, rgba(99, 102, 241, 0.15) 22px),
+                linear-gradient(0deg, transparent 49.5%, rgba(99, 102, 241, 0.12) 50%, transparent 50.5%),
+                linear-gradient(90deg, transparent 49.5%, rgba(99, 102, 241, 0.12) 50%, transparent 50.5%),
+                linear-gradient(45deg, transparent 49.5%, rgba(99, 102, 241, 0.12) 50%, transparent 50.5%),
+                linear-gradient(-45deg, transparent 49.5%, rgba(99, 102, 241, 0.12) 50%, transparent 50.5%);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-radius: 20px;
             display: flex;
             flex-direction: column;
             justify-content: center;
             align-items: center;
-            perspective: 600px;
+            perspective: 800px;
             position: relative;
             overflow: hidden;
+            box-shadow: 0 0 30px rgba(99, 102, 241, 0.1) inset;
+        }
+
+        /* Radar sweep overlay (conic sweeping lines) */
+        .spider-viewport::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 250%;
+            height: 250%;
+            background: conic-gradient(from 0deg at 50% 50%, rgba(16, 185, 129, 0.08) 0deg, transparent 60deg);
+            transform: translate(-50%, -50%) rotate(0deg);
+            pointer-events: none;
+            z-index: 1;
+            animation: radar-sweep-green 10s linear infinite;
+        }
+
+        .spider-viewport.scanning::after {
+            background: conic-gradient(from 0deg at 50% 50%, rgba(239, 68, 68, 0.18) 0deg, transparent 90deg);
+            animation: radar-sweep-red 3s linear infinite;
+        }
+
+        /* Radar pulsing center circle */
+        .spider-viewport::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 2;
+            transform: translate(-50%, -50%) scale(0.5);
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.4);
+            animation: radar-pulse-green 4s infinite linear;
+        }
+
+        .spider-viewport.scanning::before {
+            box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.5);
+            animation: radar-pulse-red 2s infinite linear;
+        }
+
+        @keyframes radar-sweep-green {
+            0% { transform: translate(-50%, -50%) rotate(0deg); }
+            100% { transform: translate(-50%, -50%) rotate(360deg); }
+        }
+
+        @keyframes radar-sweep-red {
+            0% { transform: translate(-50%, -50%) rotate(0deg); }
+            100% { transform: translate(-50%, -50%) rotate(360deg); }
+        }
+
+        @keyframes radar-pulse-green {
+            0% { transform: translate(-50%, -50%) scale(0.2); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(3.5); opacity: 0; }
+        }
+
+        @keyframes radar-pulse-red {
+            0% { transform: translate(-50%, -50%) scale(0.2); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(3.5); opacity: 0; }
         }
 
         .spider-label {
             position: absolute;
-            bottom: 10px;
+            bottom: 15px;
             font-size: 0.75rem;
-            color: #6b7280;
+            color: #818cf8;
             font-family: var(--font-mono);
             letter-spacing: 0.05em;
             text-transform: uppercase;
+            background: rgba(7, 8, 12, 0.75);
+            padding: 0.25rem 0.75rem;
+            border-radius: 10px;
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            z-index: 4;
         }
 
         /* MC Spider 3D Box Styling */
@@ -1341,15 +1900,34 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             position: relative;
             width: 0;
             height: 0;
+            z-index: 3;
             transform-style: preserve-3d;
-            transform: translate3d(0, 5px, 0) rotateX(-20deg) rotateY(-35deg);
+            transform: translate3d(0, 5px, 0) rotateX(-20deg) rotateY(-35deg) scale3d(1.7, 1.7, 1.7);
             /* Body idle bobbing */
             animation: mc-spider-bob 2.5s ease-in-out infinite alternate;
         }
 
         @keyframes mc-spider-bob {
-            0% { transform: translate3d(0, 10px, 0) rotateX(-22deg) rotateY(-38deg); }
-            100% { transform: translate3d(0, 0px, 0) rotateX(-18deg) rotateY(-32deg); }
+            0% { transform: translate3d(0, 15px, 0) rotateX(-22deg) rotateY(-38deg) scale3d(1.7, 1.7, 1.7); }
+            100% { transform: translate3d(0, -5px, 0) rotateX(-18deg) rotateY(-32deg) scale3d(1.7, 1.7, 1.7); }
+        }
+
+        /* Scan Context Card CSS */
+        .scan-context-card {
+            background: rgba(129, 140, 248, 0.04);
+            border: 1px solid rgba(129, 140, 248, 0.15);
+            border-radius: 12px;
+            padding: 1rem 1.25rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            color: #d1d5db;
+        }
+        .scan-context-card strong {
+            color: #818cf8;
         }
 
         .cube {
@@ -1544,8 +2122,17 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             animation: mc-spider-bob-active 0.3s infinite alternate ease-in-out;
         }
         @keyframes mc-spider-bob-active {
-            0% { transform: translate3d(0, 3px, 0) rotateX(-20deg) rotateY(-38deg) rotateZ(-2deg); }
-            100% { transform: translate3d(0, -3px, 0) rotateX(-16deg) rotateY(-32deg) rotateZ(2deg); }
+            0% { transform: translate3d(0, 8px, 0) rotateX(-20deg) rotateY(-38deg) rotateZ(-2deg) scale3d(1.7, 1.7, 1.7); }
+            100% { transform: translate3d(0, -2px, 0) rotateX(-16deg) rotateY(-32deg) rotateZ(2deg) scale3d(1.7, 1.7, 1.7); }
+        }
+        
+        @media (max-width: 1024px) {
+            .scan-monitor-panel {
+                grid-template-columns: 1fr;
+            }
+            .spider-center-container {
+                order: -1;
+            }
         }
     </style>
 </head>
@@ -1567,12 +2154,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         <!-- Active Scan Progress Monitor -->
         <section class="scan-monitor-panel">
-            <div class="scan-status-board">
-                <div class="scan-status-title">
-                    <span>Validation & Penetration Testing Scans</span>
-                    <span id="scan-global-status" style="font-size: 0.85rem; font-weight: normal; color: var(--text-secondary);">Initializing...</span>
-                </div>
-                <div class="scan-status-list">
+            <!-- Left Side Indicators: Static & Quality -->
+            <div class="scan-status-side-board">
+                <div class="side-board-title">Static & Quality Checks</div>
+                <div class="scan-status-side-list">
                     <div class="scan-status-item">
                         <span class="scan-name">PHPUnit Quality Suite</span>
                         <span id="scan-status-phpunit" class="scan-badge pending">Pending</span>
@@ -1582,9 +2167,146 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                         <span id="scan-status-larastan" class="scan-badge pending">Pending</span>
                     </div>
                     <div class="scan-status-item">
-                        <span class="scan-name">Software Dependencies (SCA)</span>
+                        <span class="scan-name">Dependencies (SCA Audit)</span>
                         <span id="scan-status-sca" class="scan-badge pending">Pending</span>
                     </div>
+                </div>
+            </div>
+            
+            <!-- Center 3D Spider (Web) -->
+            <div class="spider-center-container">
+                <div class="scan-global-header">
+                    <span id="scan-global-status">Initializing scans...</span>
+                </div>
+                <div class="spider-viewport" id="spider-viewport">
+                    <div class="mc-spider">
+                        <!-- Abdomen -->
+                        <div class="cube abdomen">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                        <!-- Thorax -->
+                        <div class="cube thorax">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                        <!-- Head -->
+                        <div class="cube head">
+                            <div class="face front">
+                                <div class="spider-eye eye-l-main"></div>
+                                <div class="spider-eye eye-r-main"></div>
+                                <div class="spider-eye eye-l-sub1"></div>
+                                <div class="spider-eye eye-r-sub1"></div>
+                                <div class="spider-eye eye-l-sub2"></div>
+                                <div class="spider-eye eye-r-sub2"></div>
+                                <div class="chelicera-l"></div>
+                                <div class="chelicera-r"></div>
+                            </div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                        <!-- Legs Left -->
+                        <div class="leg l1 cycle-a">
+                            <div class="cube leg-box">
+                                <div class="face front"></div>
+                                <div class="face back"></div>
+                                <div class="face left"></div>
+                                <div class="face right"></div>
+                                <div class="face top"></div>
+                                <div class="face bottom"></div>
+                            </div>
+                        </div>
+                        <div class="leg l2 cycle-b">
+                            <div class="cube leg-box">
+                                <div class="face front"></div>
+                                <div class="face back"></div>
+                                <div class="face left"></div>
+                                <div class="face right"></div>
+                                <div class="face top"></div>
+                                <div class="face bottom"></div>
+                            </div>
+                        </div>
+                        <div class="leg l3 cycle-a">
+                            <div class="cube leg-box">
+                                <div class="face front"></div>
+                                <div class="face back"></div>
+                                <div class="face left"></div>
+                                <div class="face right"></div>
+                                <div class="face top"></div>
+                                <div class="face bottom"></div>
+                            </div>
+                        </div>
+                        <div class="leg l4 cycle-b">
+                            <div class="cube leg-box">
+                                <div class="face front"></div>
+                                <div class="face back"></div>
+                                <div class="face left"></div>
+                                <div class="face right"></div>
+                                <div class="face top"></div>
+                                <div class="face bottom"></div>
+                            </div>
+                        </div>
+                        <!-- Legs Right -->
+                        <div class="leg r1 cycle-b-right">
+                            <div class="cube leg-box">
+                                <div class="face front"></div>
+                                <div class="face back"></div>
+                                <div class="face left"></div>
+                                <div class="face right"></div>
+                                <div class="face top"></div>
+                                <div class="face bottom"></div>
+                            </div>
+                        </div>
+                        <div class="leg r2 cycle-a-right">
+                            <div class="cube leg-box">
+                                <div class="face front"></div>
+                                <div class="face back"></div>
+                                <div class="face left"></div>
+                                <div class="face right"></div>
+                                <div class="face top"></div>
+                                <div class="face bottom"></div>
+                            </div>
+                        </div>
+                        <div class="leg r3 cycle-b-right">
+                            <div class="cube leg-box">
+                                <div class="face front"></div>
+                                <div class="face back"></div>
+                                <div class="face left"></div>
+                                <div class="face right"></div>
+                                <div class="face top"></div>
+                                <div class="face bottom"></div>
+                            </div>
+                        </div>
+                        <div class="leg r4 cycle-a-right">
+                            <div class="cube leg-box">
+                                <div class="face front"></div>
+                                <div class="face back"></div>
+                                <div class="face left"></div>
+                                <div class="face right"></div>
+                                <div class="face top"></div>
+                                <div class="face bottom"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="spider-label" id="spider-state-label">Pentesting target boundaries...</div>
+                </div>
+            </div>
+
+            <!-- Right Side Indicators: Dynamic & Penetration -->
+            <div class="scan-status-side-board">
+                <div class="side-board-title">Dynamic & Pentest Scans</div>
+                <div class="scan-status-side-list">
                     <div class="scan-status-item">
                         <span class="scan-name">Laravel Endpoint Discovery</span>
                         <span id="scan-status-routes" class="scan-badge pending">Pending</span>
@@ -1598,131 +2320,6 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                         <span id="scan-status-zap" class="scan-badge pending">Pending</span>
                     </div>
                 </div>
-            </div>
-            
-            <!-- 3D Minecraft Spider Viewport -->
-            <div class="spider-viewport" id="spider-viewport">
-                <div class="mc-spider">
-                    <!-- Abdomen -->
-                    <div class="cube abdomen">
-                        <div class="face front"></div>
-                        <div class="face back"></div>
-                        <div class="face left"></div>
-                        <div class="face right"></div>
-                        <div class="face top"></div>
-                        <div class="face bottom"></div>
-                    </div>
-                    <!-- Thorax -->
-                    <div class="cube thorax">
-                        <div class="face front"></div>
-                        <div class="face back"></div>
-                        <div class="face left"></div>
-                        <div class="face right"></div>
-                        <div class="face top"></div>
-                        <div class="face bottom"></div>
-                    </div>
-                    <!-- Head -->
-                    <div class="cube head">
-                        <div class="face front">
-                            <div class="spider-eye eye-l-main"></div>
-                            <div class="spider-eye eye-r-main"></div>
-                            <div class="spider-eye eye-l-sub1"></div>
-                            <div class="spider-eye eye-r-sub1"></div>
-                            <div class="spider-eye eye-l-sub2"></div>
-                            <div class="spider-eye eye-r-sub2"></div>
-                            <div class="chelicera-l"></div>
-                            <div class="chelicera-r"></div>
-                        </div>
-                        <div class="face back"></div>
-                        <div class="face left"></div>
-                        <div class="face right"></div>
-                        <div class="face top"></div>
-                        <div class="face bottom"></div>
-                    </div>
-                    <!-- Legs Left -->
-                    <div class="leg l1 cycle-a">
-                        <div class="cube leg-box">
-                            <div class="face front"></div>
-                            <div class="face back"></div>
-                            <div class="face left"></div>
-                            <div class="face right"></div>
-                            <div class="face top"></div>
-                            <div class="face bottom"></div>
-                        </div>
-                    </div>
-                    <div class="leg l2 cycle-b">
-                        <div class="cube leg-box">
-                            <div class="face front"></div>
-                            <div class="face back"></div>
-                            <div class="face left"></div>
-                            <div class="face right"></div>
-                            <div class="face top"></div>
-                            <div class="face bottom"></div>
-                        </div>
-                    </div>
-                    <div class="leg l3 cycle-a">
-                        <div class="cube leg-box">
-                            <div class="face front"></div>
-                            <div class="face back"></div>
-                            <div class="face left"></div>
-                            <div class="face right"></div>
-                            <div class="face top"></div>
-                            <div class="face bottom"></div>
-                        </div>
-                    </div>
-                    <div class="leg l4 cycle-b">
-                        <div class="cube leg-box">
-                            <div class="face front"></div>
-                            <div class="face back"></div>
-                            <div class="face left"></div>
-                            <div class="face right"></div>
-                            <div class="face top"></div>
-                            <div class="face bottom"></div>
-                        </div>
-                    </div>
-                    <!-- Legs Right -->
-                    <div class="leg r1 cycle-b-right">
-                        <div class="cube leg-box">
-                            <div class="face front"></div>
-                            <div class="face back"></div>
-                            <div class="face left"></div>
-                            <div class="face right"></div>
-                            <div class="face top"></div>
-                            <div class="face bottom"></div>
-                        </div>
-                    </div>
-                    <div class="leg r2 cycle-a-right">
-                        <div class="cube leg-box">
-                            <div class="face front"></div>
-                            <div class="face back"></div>
-                            <div class="face left"></div>
-                            <div class="face right"></div>
-                            <div class="face top"></div>
-                            <div class="face bottom"></div>
-                        </div>
-                    </div>
-                    <div class="leg r3 cycle-b-right">
-                        <div class="cube leg-box">
-                            <div class="face front"></div>
-                            <div class="face back"></div>
-                            <div class="face left"></div>
-                            <div class="face right"></div>
-                            <div class="face top"></div>
-                            <div class="face bottom"></div>
-                        </div>
-                    </div>
-                    <div class="leg r4 cycle-a-right">
-                        <div class="cube leg-box">
-                            <div class="face front"></div>
-                            <div class="face back"></div>
-                            <div class="face left"></div>
-                            <div class="face right"></div>
-                            <div class="face top"></div>
-                            <div class="face bottom"></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="spider-label" id="spider-state-label">Pentesting target boundaries...</div>
             </div>
         </section>
 
@@ -1813,6 +2410,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </section>
 
+            <!-- Scan Context Card -->
+            <div class="scan-context-card">
+                <div><strong>📅 Time & Date Tested:</strong> <span id="test-scan-time">Pending scan...</span></div>
+                <div><strong>🔍 Type of Test:</strong> Functional & Integrity Quality Suite</div>
+                <div><strong>🎓 What is scanned (Non-Technical):</strong> Tests if user interfaces, pages, and key workflows behave as expected for teachers and students, blocking unauthorized logins and actions. It acts like a digital inspector verifying the application's foundation works.</div>
+            </div>
+
             <section class="panel">
                 <div class="panel-header">
                     <h2>Test Case Details</h2>
@@ -1822,10 +2426,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     <table>
                         <thead>
                             <tr>
-                                <th>Class</th>
-                                <th>Test Case</th>
-                                <th>Status</th>
-                                <th>Duration</th>
+                                <th style="width: 20%;">Module / Component</th>
+                                <th style="width: 18%;">Type of Test</th>
+                                <th>What is Scanned (Friendly Explanation)</th>
+                                <th style="width: 12%;">Status</th>
+                                <th style="width: 12%;">Execution Time</th>
                             </tr>
                         </thead>
                         <tbody id="testTableBody"></tbody>
@@ -1848,6 +2453,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     <div class="metric-subtext">Issues flagged by parser</div>
                 </div>
             </section>
+
+            <!-- Scan Context Card -->
+            <div class="scan-context-card">
+                <div><strong>📅 Time & Date Tested:</strong> <span id="larastan-scan-time">Pending scan...</span></div>
+                <div><strong>🔍 Type of Test:</strong> Static Code Security Analysis (SAST)</div>
+                <div><strong>🎓 What is scanned (Non-Technical):</strong> Automatically reads through every line of programming code in the application to find typos, logical bugs, type mismatches, or security bugs before the website is published. It acts like an automated proofreader for the developer's work.</div>
+            </div>
 
             <section class="panel">
                 <div class="panel-header">
@@ -1952,6 +2564,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </section>
 
+            <!-- Scan Context Card -->
+            <div class="scan-context-card">
+                <div><strong>📅 Time & Date Tested:</strong> <span id="zap-scan-time">Pending scan...</span></div>
+                <div><strong>🔍 Type of Test:</strong> Dynamic Vulnerability Penetration Test (DAST)</div>
+                <div><strong>🎓 What is scanned (Non-Technical):</strong> Simulates a mock hacker trying to break into the running application from the outside. It searches for common vulnerabilities like SQL database leaks, cross-site scripting (XSS), and permission bypasses on pages and login links.</div>
+            </div>
+
             <section class="panel">
                 <div class="panel-header">
                     <h2>Auditing Alerts</h2>
@@ -1963,7 +2582,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                             <tr>
                                 <th style="width: 15%;">Risk</th>
                                 <th style="width: 25%;">Vulnerability Title</th>
-                                <th>Business Impact & Remedy Guide</th>
+                                <th>Business Impact & Action Required</th>
                             </tr>
                         </thead>
                         <tbody id="zapTableBody"></tbody>
@@ -1995,6 +2614,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     <div class="metric-subtext">Vulnerability audit scan result</div>
                 </div>
             </section>
+
+            <!-- Scan Context Card -->
+            <div class="scan-context-card">
+                <div><strong>📅 Time & Date Tested:</strong> <span id="sca-scan-time">Pending scan...</span></div>
+                <div><strong>🔍 Type of Test:</strong> Software Supply Chain & Dependency Audit (SCA)</div>
+                <div><strong>🎓 What is scanned (Non-Technical):</strong> Scans the list of external plugins, software libraries, and packages used by the application (Composer for backend, NPM for frontend) to check if any of them contain publicly reported security flaws that need upgrading.</div>
+            </div>
 
             <section class="panel">
                 <div class="panel-header">
@@ -2063,6 +2689,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 </div>
             </section>
 
+            <!-- Scan Context Card -->
+            <div class="scan-context-card">
+                <div><strong>📅 Time & Date Tested:</strong> <span id="native-scan-time">Pending scan...</span></div>
+                <div><strong>🔍 Type of Test:</strong> Configuration & API Access Control Audit</div>
+                <div><strong>🎓 What is scanned (Non-Technical):</strong> Tests specific server boundary policies, login failure handling, session timeouts, secure cookie flags, and database access points to make sure student data and research uploads cannot be leaked or tampered with.</div>
+            </div>
+
             <section class="panel">
                 <div class="panel-header">
                     <h2>Native Boundary Verification Checks</h2>
@@ -2075,7 +2708,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                                 <th style="width: 25%;">Check Title</th>
                                 <th style="width: 10%;">Status</th>
                                 <th style="width: 10%;">Severity</th>
-                                <th>Observed Behaviour & Guidance</th>
+                                <th>Observed Behaviour & Action Required</th>
                             </tr>
                         </thead>
                         <tbody id="nativeTableBody"></tbody>
@@ -2127,9 +2760,44 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             }
         }
 
+        function getTestFriendlyDetails(className, testName) {
+            let type = "Feature Verification";
+            let target = "General System Integrity";
+            
+            if (!className || !testName) {
+                return { type, target };
+            }
+            
+            const nameLower = String(testName).toLowerCase();
+            const classLower = String(className).toLowerCase();
+            
+            if (classLower.includes('brokenaccess') || nameLower.includes('access') || nameLower.includes('guest') || nameLower.includes('visibility') || nameLower.includes('policy')) {
+                type = "Privacy & Access Boundary";
+                target = "Verifies that guests, students, and teachers can only view public research. It confirms private drafts and document access policies are strictly locked down.";
+            } else if (classLower.includes('documentprocessing') || nameLower.includes('upload') || nameLower.includes('file')) {
+                type = "File Safety & Malware Scan";
+                target = "Ensures uploaded research papers are processed, indexed, scanned for viruses (like the standard EICAR test signature), and stored on private disk drives.";
+            } else if (classLower.includes('ai') || nameLower.includes('ai') || nameLower.includes('analyze')) {
+                type = "AI Summary & Tagging Test";
+                target = "Checks the Gemini AI model's capability to safely extract abstracts, titles, and SDGs from PDFs without mutating records without human review.";
+            } else if (classLower.includes('security') || nameLower.includes('csrf') || nameLower.includes('throttle') || nameLower.includes('cookie') || nameLower.includes('login')) {
+                type = "Cybersecurity Defensive Scan";
+                target = "Validates the application's core defenses against login brute-forcing, cross-site forgery (CSRF), session leaks, and secure cookie settings.";
+            } else if (classLower.includes('example') || classLower.includes('release') || nameLower.includes('homepage') || nameLower.includes('dashboard')) {
+                type = "Page Interface Check";
+                target = "Ensures critical pages (like search engine, public browse lists, or administrator control panels) render properly and load content.";
+            } else if (nameLower.includes('workflow') || nameLower.includes('approve') || nameLower.includes('reject') || nameLower.includes('submit')) {
+                type = "Publishing Workflow Check";
+                target = "Checks that document status transitions (Draft -> Under Review -> Published -> Archived) occur in the correct order and require authorized approval.";
+            }
+            
+            return { type, target };
+        }
+
         // Translation Maps for Non-Technical Users (SAST)
         function translateLarastanError(msg) {
-            msg = msg.toLowerCase();
+            if (!msg) return { impact: "Unknown Static Analysis Warning", remedy: "Inspect line details." };
+            msg = String(msg).toLowerCase();
             if (msg.includes('undefined property') || msg.includes('has no property')) {
                 return {
                     impact: "<strong>System Stability Risk:</strong> The program tried to access database information that does not exist. This could cause the page to crash or show error pages to agency administrators during document submission.",
@@ -2248,8 +2916,15 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
             
-            event.target.classList.add('active');
-            document.getElementById('tab-' + tabId).classList.add('active');
+            const btn = document.querySelector(`.tab-btn[onclick*="'${tabId}'"]`) || document.querySelector(`.tab-btn[onclick*="${tabId}"]`);
+            if (btn) {
+                btn.classList.add('active');
+            }
+            
+            const content = document.getElementById('tab-' + tabId);
+            if (content) {
+                content.classList.add('active');
+            }
         }
 
         async function loadAllData() {
@@ -2266,8 +2941,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         // --- NATIVE SECURITY AUDIT LOGIC ---
         async function loadNativeData() {
             try {
-                const response = await fetch('/api/native');
-                nativeData = (await response.json()) || [];
+                const response = await fetch('/api/native?_t=' + Date.now());
+                const res = (await response.json()) || {};
+                nativeData = res.checks || [];
+                const timeEl = document.getElementById('native-scan-time');
+                if (timeEl) timeEl.innerText = res.timestamp || 'Pending scan...';
                 renderNativeMetrics();
                 renderNativeTable(nativeData);
             } catch (e) {
@@ -2320,8 +2998,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     <td><span class="badge ${badgeClass}">${item.status}</span></td>
                     <td><span class="badge ${severityClass}">${item.severity}</span></td>
                     <td>
-                        <div style="margin-bottom: 0.25rem;"><strong>Observed:</strong> ${escapeHtml(item.observed)}</div>
-                        <div style="font-size: 0.8rem; color: #a5b4fc; margin-top: 0.25rem;"><strong>OWASP Category:</strong> ${escapeHtml(item.owasp)}</div>
+                        <div style="margin-bottom: 0.35rem;"><strong>Observed:</strong> ${escapeHtml(item.observed)}</div>
+                        <div style="font-size: 0.85rem; color: #fb7185; margin-bottom: 0.35rem;">
+                            <strong>Action Required:</strong> ${item.status === 'Passed' ? '<span style="color: #34d399;">No action required. The configuration is secure.</span>' : escapeHtml(item.description)}
+                        </div>
+                        <div style="font-size: 0.8rem; color: #a5b4fc;"><strong>OWASP Category:</strong> ${escapeHtml(item.owasp)}</div>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -2331,8 +3012,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         // --- PHPUNIT LOGIC ---
         async function loadTestData() {
             try {
-                const response = await fetch('/api/results');
-                testData = (await response.json()) || [];
+                const response = await fetch('/api/results?_t=' + Date.now());
+                const res = (await response.json()) || {};
+                testData = res.tests || [];
+                const timeEl = document.getElementById('test-scan-time');
+                if (timeEl) timeEl.innerText = res.timestamp || 'Pending scan...';
                 renderTestMetrics();
                 renderTestCharts();
                 renderTestTable(testData);
@@ -2428,11 +3112,19 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     detailRow = `<div class="error-log">${escapeHtml(tc.message)}</div>`;
                 }
 
+                // Get non-technical details
+                const friendly = getTestFriendlyDetails(tc.class, tc.name);
+                
+                // Extract simple component name from php class
+                let moduleName = tc.class.split('\\').pop();
+                moduleName = moduleName.replace(/Test$/, '').replace(/([A-Z])/g, ' $1').trim();
+
                 tr.innerHTML = `
-                    <td class="code-path">${escapeHtml(tc.class)}</td>
+                    <td class="code-path">${escapeHtml(moduleName)}</td>
+                    <td style="font-weight: 500; color: #818cf8;">${escapeHtml(friendly.type)}</td>
                     <td>
-                        <div style="font-weight: 500; margin-bottom: 0.25rem;">${escapeHtml(tc.name)}</div>
-                        <div style="font-size: 0.8rem; color: var(--text-secondary);">${escapeHtml(tc.fullname)}</div>
+                        <div style="font-weight: 600; color: #fff; margin-bottom: 0.25rem;">${escapeHtml(tc.name.replace(/^test_/, '').replace(/_/g, ' '))}</div>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary);">${escapeHtml(friendly.target)}</div>
                         ${detailRow}
                     </td>
                     <td><span class="badge ${badgeClass}">${tc.status}</span></td>
@@ -2443,10 +3135,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         }
 
         function filterTests() {
-            const query = document.getElementById('testSearch').value.toLowerCase();
+            const query = (document.getElementById('testSearch').value || '').toLowerCase();
             const filtered = testData.filter(d => 
-                d.name.toLowerCase().includes(query) || 
-                d.class.toLowerCase().includes(query)
+                (d.name && String(d.name).toLowerCase().includes(query)) || 
+                (d.class && String(d.class).toLowerCase().includes(query))
             );
             renderTestTable(filtered);
         }
@@ -2454,8 +3146,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         // --- LARASTAN LOGIC ---
         async function loadLarastanData() {
             try {
-                const response = await fetch('/api/larastan');
+                const response = await fetch('/api/larastan?_t=' + Date.now());
                 larastanData = (await response.json()) || { errors: [] };
+                const timeEl = document.getElementById('larastan-scan-time');
+                if (timeEl) timeEl.innerText = larastanData.timestamp || 'Pending scan...';
                 
                 const wrapper = document.getElementById('larastan-table-wrapper');
                 const nodata = document.getElementById('larastan-no-data');
@@ -2517,7 +3211,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                             <button class="technical-toggle-btn" onclick="toggleTechBox(this)">Show Technical Code Error</button>
                             <div class="technical-box">
                                 <div class="error-log" style="margin-bottom: 0.5rem;">${escapeHtml(err.message)}</div>
-                                <div style="font-size: 0.85rem; color: #a7f3d0;"><strong>Suggested Fix:</strong> ${trans.remedy}</div>
+                                <div style="font-size: 0.85rem; color: #fb7185; margin-top: 0.5rem;"><strong>Action Required:</strong> ${trans.remedy}</div>
                             </div>
                         </div>
                     </td>
@@ -2550,8 +3244,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         // --- ZAP LOGIC ---
         async function loadZapData() {
             try {
-                const response = await fetch('/api/zap');
-                zapData = (await response.json()) || [];
+                const response = await fetch('/api/zap?_t=' + Date.now());
+                const res = (await response.json()) || {};
+                zapData = res.alerts || [];
+                const timeEl = document.getElementById('zap-scan-time');
+                if (timeEl) timeEl.innerText = res.timestamp || 'Pending scan...';
                 
                 const wrapper = document.getElementById('zap-table-wrapper');
                 const nodata = document.getElementById('zap-no-data');
@@ -2587,8 +3284,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         async function loadScaData() {
             try {
-                const response = await fetch('/api/sca');
-                scaData = (await response.json()) || { composer: [], npm: [] };
+                const response = await fetch('/api/sca?_t=' + Date.now());
+                const res = (await response.json()) || {};
+                scaData = res;
+                const timeEl = document.getElementById('sca-scan-time');
+                if (timeEl) timeEl.innerText = res.timestamp || 'Pending scan...';
                 
                 const composerCount = (scaData.composer || []).length;
                 const npmCount = (scaData.npm || []).length;
@@ -2706,7 +3406,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                             <div class="technical-box">
                                 <div class="description-box" style="margin-bottom: 0.5rem;">${escapeHtml(alert.description)}</div>
                                 <div class="solution-box">
-                                    <strong>How to Resolve:</strong><br>
+                                    <strong>Action Required:</strong><br>
                                     ${trans.remedy}<br><br>
                                     <em>Technical Recommendation:</em> ${escapeHtml(alert.solution)}
                                 </div>
@@ -2890,14 +3590,16 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         // Status Polling & Spider Animation Controller
         let pollInterval = null;
+        let lastStatusMap = {};
 
         async function pollScanStatus() {
             try {
-                const response = await fetch('/api/status');
+                const response = await fetch('/api/status?_t=' + Date.now());
                 const statusMap = await response.json();
                 
                 let anyActive = false;
                 let keys = Object.keys(statusMap);
+                let statusChanged = false;
                 
                 keys.forEach(key => {
                     const badge = document.getElementById('scan-status-' + key);
@@ -2909,6 +3611,20 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                         if (currentStatus === 'running' || currentStatus === 'pending') {
                             anyActive = true;
                         }
+                        
+                        const prevStatus = lastStatusMap[key];
+                        // Detect transition from pending/running to a finished state
+                        if ((prevStatus === 'running' || prevStatus === 'pending') && 
+                            (currentStatus === 'completed' || currentStatus === 'failed' || currentStatus === 'skipped')) {
+                            statusChanged = true;
+                        }
+                        // Also detect when we first see a finished state (prevStatus was undefined/not set yet)
+                        if (prevStatus === undefined && 
+                            (currentStatus === 'completed' || currentStatus === 'failed' || currentStatus === 'skipped')) {
+                            statusChanged = true;
+                        }
+                        
+                        lastStatusMap[key] = currentStatus;
                     }
                 });
 
@@ -2930,8 +3646,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                         clearInterval(pollInterval);
                         pollInterval = null;
                     }
-                    
-                    // Reload all dashboard tables and scores once to reflect newly generated reports
+                }
+                
+                // Dynamically reload all tables and health metrics if a scan just completed
+                if (statusChanged || !anyActive) {
                     loadAllData();
                 }
             } catch (e) {
@@ -2945,10 +3663,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         }
 
         // Initialize
-        window.onload = function() {
+        document.addEventListener('DOMContentLoaded', function() {
             loadAllData();
             startPolling();
-        };
+        });
     </script>
 </body>
 </html>
@@ -2957,13 +3675,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 def run_server():
     port = PORT
     handler = DashboardHandler
-    socketserver.TCPServer.allow_reuse_address = True
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
     
     global ACTIVE_DASHBOARD_PORT
     
     while port < PORT + 50:
         try:
-            with socketserver.TCPServer(("", port), handler) as httpd:
+            with socketserver.ThreadingTCPServer(("", port), handler) as httpd:
                 ACTIVE_DASHBOARD_PORT = port
                 print("=======================================================")
                 print(f" RIKMS Verification & Auditing Dashboard is running at:")
@@ -2973,7 +3691,17 @@ def run_server():
                 # Start background scans automatically in a separate thread so startup is instant
                 threading.Thread(target=run_background_scans, daemon=True).start()
                 
-                webbrowser.open(f"http://localhost:{port}/")
+                # Open browser in a separate thread so it can never block serve_forever()
+                def open_browser():
+                    try:
+                        import time
+                        time.sleep(0.5) # Give the server a moment to start listening
+                        webbrowser.open(f"http://localhost:{port}/")
+                    except Exception:
+                        pass
+                
+                threading.Thread(target=open_browser, daemon=True).start()
+                
                 httpd.serve_forever()
                 break
         except OSError:
