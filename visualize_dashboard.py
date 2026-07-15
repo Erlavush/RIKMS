@@ -20,6 +20,15 @@ ROUTE_MAP_FILE = 'route-map.json'
 
 ACTIVE_DASHBOARD_PORT = 8888
 
+SCAN_STATUS = {
+    "phpunit": "pending",
+    "larastan": "pending",
+    "sca": "pending",
+    "routes": "pending",
+    "native": "pending",
+    "zap": "pending"
+}
+
 def load_env_file():
     env_vars = {}
     if os.path.exists('.env'):
@@ -221,21 +230,27 @@ def run_native_security_scan(target_url):
 
 # ----------------- SCAN RUNNER AUTOMATION -----------------
 def run_background_scans():
+    global SCAN_STATUS
+    
     # 0. Run PHPUnit Functional & Security Tests
     print("\n=======================================================")
     print("[Shift-Left] Running automated functional and BOLA test suite...")
     print("=======================================================")
+    SCAN_STATUS["phpunit"] = "running"
     phpunit_cmd = "php vendor/bin/phpunit --log-junit report.xml"
     try:
         subprocess.run(phpunit_cmd, shell=True, capture_output=True, text=True)
         print("[Shift-Left] Test suite run completed. Saved results to report.xml")
+        SCAN_STATUS["phpunit"] = "completed"
     except Exception as e:
         print(f"[Shift-Left] Error running tests: {e}")
+        SCAN_STATUS["phpunit"] = "failed"
 
     # 1. Run Larastan Scan
     print("\n=======================================================")
     print("[SAST] Starting automated Larastan static analysis scan...")
     print("=======================================================")
+    SCAN_STATUS["larastan"] = "running"
     
     phpstan_bin = os.path.join('vendor', 'bin', 'phpstan')
     if os.path.exists(phpstan_bin):
@@ -245,24 +260,27 @@ def run_background_scans():
     
     try:
         res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        # Check if stdout contains JSON, otherwise write empty
         stdout_str = res.stdout.strip() if res.stdout else ""
         if stdout_str.startswith("{") or stdout_str.startswith("["):
             with open(LARASTAN_FILE, 'w', encoding='utf-8') as f:
                 f.write(stdout_str)
             print(f"[SAST] Larastan scan complete. Saved to {LARASTAN_FILE}")
         else:
-            # Maybe there was a configuration or path error, let's write what we got or empty dict
             with open(LARASTAN_FILE, 'w', encoding='utf-8') as f:
                 f.write(json.dumps({"files": {}, "errors": [stdout_str or "Larastan execution output error"]}))
             print(f"[SAST] Larastan scan run with warning. Output saved to {LARASTAN_FILE}")
+        SCAN_STATUS["larastan"] = "completed"
     except Exception as e:
         print(f"[SAST] Error running Larastan scan: {e}")
+        SCAN_STATUS["larastan"] = "failed"
 
     # 1.5. Run Software Composition Analysis (SCA)
     print("\n=======================================================")
     print("[SCA] Starting Software Composition Analysis (SCA)...")
     print("=======================================================")
+    SCAN_STATUS["sca"] = "running"
+    sca_error = False
+    
     try:
         print("[SCA] Running composer audit...")
         res = subprocess.run("composer audit --format=json", shell=True, capture_output=True, text=True)
@@ -271,6 +289,7 @@ def run_background_scans():
         print(f"[SCA] Composer audit completed. Saved to {COMPOSER_AUDIT_FILE}")
     except Exception as e:
         print(f"[SCA] Error running Composer audit: {e}")
+        sca_error = True
 
     try:
         print("[SCA] Running npm audit...")
@@ -280,23 +299,80 @@ def run_background_scans():
         print(f"[SCA] NPM audit completed. Saved to {NPM_AUDIT_FILE}")
     except Exception as e:
         print(f"[SCA] Error running NPM audit: {e}")
+        sca_error = True
+        
+    SCAN_STATUS["sca"] = "failed" if sca_error else "completed"
 
     # 1.6. Generate Route Map for Greybox DAST Seeding
     print("\n=======================================================")
     print("[DAST Seeding] Dumping application endpoints route-map...")
     print("=======================================================")
+    SCAN_STATUS["routes"] = "running"
     try:
         res = subprocess.run("php artisan route:list --json", shell=True, capture_output=True, text=True)
         if res.stdout and res.stdout.strip().startswith("["):
             with open(ROUTE_MAP_FILE, 'w', encoding='utf-8') as f:
                 f.write(res.stdout)
             print(f"[DAST Seeding] Seeding endpoint directory saved to {ROUTE_MAP_FILE}")
+            SCAN_STATUS["routes"] = "completed"
         else:
             print("[DAST Seeding] Could not extract route list from Laravel.")
+            SCAN_STATUS["routes"] = "skipped"
     except Exception as e:
         print(f"[DAST Seeding] Error dumping route list: {e}")
+        SCAN_STATUS["routes"] = "failed"
 
-    # 2. Run ZAP Scan
+    # Resolve target URL and run the Native Boundary Audit
+    env_vars = load_env_file()
+    target_url = env_vars.get('PENTEST_TARGET') or env_vars.get('APP_URL')
+    
+    if target_url:
+        if not target_url.startswith("http://") and not target_url.startswith("https://"):
+            target_url = "http://" + target_url
+            
+    is_remote = False
+    if target_url:
+        parsed = urlparse(target_url)
+        host = parsed.hostname or ""
+        if host and host != "127.0.0.1" and host != "localhost":
+            is_remote = True
+
+    dashboard_port = ACTIVE_DASHBOARD_PORT
+    
+    if not is_remote:
+        running_port = None
+        target_host = "127.0.0.1"
+        for port in [8000, 8080]:
+            if port == dashboard_port:
+                continue
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            res_conn = s.connect_ex((target_host, port))
+            s.close()
+            if res_conn == 0:
+                running_port = port
+                break
+                
+        if not running_port:
+            print("\n=======================================================")
+            print("[DAST] Target web application is not running (checked ports 8000 and 8080).")
+            print("[DAST] Skipping automated scanning for DAST targets.")
+            print("=======================================================\n")
+            SCAN_STATUS["native"] = "skipped"
+            SCAN_STATUS["zap"] = "skipped"
+            return
+            
+        target_url = f"http://{target_host}:{running_port}"
+        
+    # Run native Python security scan
+    SCAN_STATUS["native"] = "running"
+    try:
+        run_native_security_scan(target_url)
+        SCAN_STATUS["native"] = "completed"
+    except Exception as e:
+        print(f"Error running native scan: {e}")
+        SCAN_STATUS["native"] = "failed"
+
     # Find ZAP
     zap_bin = None
     zap_bin_in_path = shutil.which("zap.bat") or shutil.which("zap.sh")
@@ -332,81 +408,40 @@ def run_background_scans():
                 
     if not zap_bin:
         print("\n=======================================================")
-        print("[DAST] OWASP ZAP executable not found in PATH or standard installation folders.")
+        print("[DAST] OWASP ZAP executable not found in PATH or standard folders.")
         print("[DAST] Skipping automated dynamic analysis scan.")
-        print("[DAST] (See the step-by-step ZAP guide in the dashboard UI to run manually.)")
         print("=======================================================\n")
+        SCAN_STATUS["zap"] = "skipped"
         return
         
-    # Load environment variables to check for remote pentest target
-    env_vars = load_env_file()
-    target_url = env_vars.get('PENTEST_TARGET') or env_vars.get('APP_URL')
-    
-    if target_url:
-        if not target_url.startswith("http://") and not target_url.startswith("https://"):
-            target_url = "http://" + target_url
-            
-    is_remote = False
-    if target_url:
-        parsed = urlparse(target_url)
-        host = parsed.hostname or ""
-        if host and host != "127.0.0.1" and host != "localhost":
-            is_remote = True
-
-    dashboard_port = ACTIVE_DASHBOARD_PORT
-    
-    if not is_remote:
-        # Fallback to local port detection if target is local or not specified
-        running_port = None
-        target_host = "127.0.0.1"
-        for port in [8000, 8080]:
-            if port == dashboard_port:
-                continue
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            res_conn = s.connect_ex((target_host, port))
-            s.close()
-            if res_conn == 0:
-                running_port = port
-                break
-                
-        if not running_port:
-            print("\n=======================================================")
-            print("[DAST] Target web application is not running (checked ports 8000 and 8080).")
-            print("[DAST] Skipping automated ZAP scan. ZAP requires the application to be running.")
-            print("[DAST] Please start the Laravel application first (e.g. 'php artisan serve').")
-            print("=======================================================\n")
-            return
-        target_url = f"http://{target_host}:{running_port}"
-        
-    # Run native Python security scan on the finalized target URL
-    run_native_security_scan(target_url)
     print("\n=======================================================")
     print(f"[DAST] OWASP ZAP found at: {zap_bin}")
     print(f"[DAST] Starting automated ZAP quick scan on target {target_url}...")
     print("=======================================================")
     
+    SCAN_STATUS["zap"] = "running"
     temp_report = os.path.abspath("zap-report-temp.json")
     zap_temp_dir = os.path.abspath(".zap_temp")
     os.makedirs(zap_temp_dir, exist_ok=True)
     zap_cmd = f'"{zap_bin}" -dir "{zap_temp_dir}" -port 8090 -cmd -quickurl {target_url} -quickout "{temp_report}"'
     
     try:
-        # Run ZAP with timeout (3 minutes) and set cwd to ZAP folder to resolve jar path issues
         res = subprocess.run(zap_cmd, shell=True, capture_output=True, text=True, timeout=180, cwd=os.path.dirname(zap_bin))
         if os.path.exists(temp_report):
             if os.path.exists(ZAP_FILE):
                 os.remove(ZAP_FILE)
             os.rename(temp_report, ZAP_FILE)
             print(f"[DAST] ZAP scan completed successfully. Saved to {ZAP_FILE}")
+            SCAN_STATUS["zap"] = "completed"
         else:
             print("[DAST] ZAP scan completed, but no report file was generated.")
-            print(f"[DAST] ZAP stdout:\n{res.stdout}")
-            print(f"[DAST] ZAP stderr:\n{res.stderr}")
+            SCAN_STATUS["zap"] = "failed"
     except subprocess.TimeoutExpired:
         print("[DAST] ZAP scan timed out after 3 minutes.")
+        SCAN_STATUS["zap"] = "failed"
     except Exception as e:
         print(f"[DAST] Error during automated ZAP scan: {e}")
+        SCAN_STATUS["zap"] = "failed"
     print("=======================================================\n")
 
 
@@ -617,6 +652,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps(results or []).encode('utf-8'))
+        elif parsed_path.path == '/api/status':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(SCAN_STATUS).encode('utf-8'))
         elif parsed_path.path == '/' or parsed_path.path == '/index.html':
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
@@ -1174,6 +1214,339 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             margin-bottom: 0.25rem;
             color: var(--text-secondary);
         }
+
+        /* ================= SCAN MONITOR & MC SPIDER ================= */
+        .scan-monitor-panel {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .scan-status-board {
+            flex: 1 1 500px;
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .scan-status-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: #fff;
+        }
+
+        .scan-status-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+        }
+
+        .scan-status-item {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.9rem;
+        }
+
+        .scan-status-item span.scan-name {
+            font-weight: 500;
+            color: #d1d5db;
+        }
+
+        .scan-badge {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25rem 0.6rem;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+
+        .scan-badge.pending {
+            background: rgba(107, 114, 128, 0.1);
+            color: #9ca3af;
+            border: 1px solid rgba(107, 114, 128, 0.2);
+        }
+
+        .scan-badge.running {
+            background: rgba(59, 130, 246, 0.15);
+            color: #60a5fa;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            animation: pulse-blue 1s infinite alternate;
+        }
+
+        .scan-badge.completed {
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .scan-badge.failed {
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .scan-badge.skipped {
+            background: rgba(245, 158, 11, 0.1);
+            color: #fbbf24;
+            border: 1px solid rgba(245, 158, 11, 0.2);
+        }
+
+        @keyframes pulse-blue {
+            0% { opacity: 0.7; }
+            100% { opacity: 1; filter: drop-shadow(0 0 4px #3b82f6); }
+        }
+
+        /* 3D Minecraft Spider Viewport */
+        .spider-viewport {
+            width: 280px;
+            height: 180px;
+            background: #0f1016;
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            perspective: 600px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .spider-label {
+            position: absolute;
+            bottom: 10px;
+            font-size: 0.75rem;
+            color: #6b7280;
+            font-family: var(--font-mono);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        /* MC Spider 3D Box Styling */
+        .mc-spider {
+            position: relative;
+            width: 0;
+            height: 0;
+            transform-style: preserve-3d;
+            transform: translate3d(0, 5px, 0) rotateX(-20deg) rotateY(-35deg);
+            /* Body idle bobbing */
+            animation: mc-spider-bob 2.5s ease-in-out infinite alternate;
+        }
+
+        @keyframes mc-spider-bob {
+            0% { transform: translate3d(0, 10px, 0) rotateX(-22deg) rotateY(-38deg); }
+            100% { transform: translate3d(0, 0px, 0) rotateX(-18deg) rotateY(-32deg); }
+        }
+
+        .cube {
+            position: absolute;
+            transform-style: preserve-3d;
+        }
+
+        .face {
+            position: absolute;
+            box-sizing: border-box;
+            border: 1px solid rgba(0, 0, 0, 0.95);
+            /* Minecraft-like noise simulation */
+            background-color: #242528;
+            background-image: linear-gradient(rgba(0,0,0,0.05) 50%, transparent 50%),
+                              linear-gradient(90deg, rgba(0,0,0,0.05) 50%, transparent 50%);
+            background-size: 4px 4px;
+        }
+
+        /* 3D shading sides */
+        .face.front  { filter: brightness(1.0); }
+        .face.back   { filter: brightness(0.65); }
+        .face.left   { filter: brightness(0.85); }
+        .face.right  { filter: brightness(0.85); }
+        .face.top    { filter: brightness(1.2); }
+        .face.bottom { filter: brightness(0.4); }
+
+        /* Abdomen: rear segment */
+        .abdomen {
+            left: -20px;
+            top: -14px;
+            width: 40px;
+            height: 28px;
+            transform-style: preserve-3d;
+            transform: translate3d(0, -2px, -36px);
+        }
+        .abdomen .front  { width: 40px; height: 28px; transform: translateZ(24px); }
+        .abdomen .back   { width: 40px; height: 28px; transform: rotateY(180deg) translateZ(24px); }
+        .abdomen .left   { width: 48px; height: 28px; transform: rotateY(-90deg) translateZ(20px); left: -4px; }
+        .abdomen .right  { width: 48px; height: 28px; transform: rotateY(90deg) translateZ(20px); left: -4px; }
+        .abdomen .top    { width: 40px; height: 48px; transform: rotateX(90deg) translateZ(14px); top: -10px; }
+        .abdomen .bottom { width: 40px; height: 48px; transform: rotateX(-90deg) translateZ(14px); top: -10px; }
+
+        /* Thorax: middle segment */
+        .thorax {
+            left: -12px;
+            top: -10px;
+            width: 24px;
+            height: 20px;
+            transform-style: preserve-3d;
+            transform: translate3d(0, 2px, 0);
+        }
+        .thorax .front  { width: 24px; height: 20px; transform: translateZ(12px); }
+        .thorax .back   { width: 24px; height: 20px; transform: rotateY(180deg) translateZ(12px); }
+        .thorax .left   { width: 24px; height: 20px; transform: rotateY(-90deg) translateZ(12px); }
+        .thorax .right  { width: 24px; height: 20px; transform: rotateY(90deg) translateZ(12px); }
+        .thorax .top    { width: 24px; height: 24px; transform: rotateX(90deg) translateZ(10px); top: -2px; }
+        .thorax .bottom { width: 24px; height: 24px; transform: rotateX(-90deg) translateZ(10px); top: -2px; }
+
+        /* Head: front segment */
+        .head {
+            left: -16px;
+            top: -12px;
+            width: 32px;
+            height: 24px;
+            transform-style: preserve-3d;
+            transform: translate3d(0, 0, 20px);
+        }
+        .head .front  { width: 32px; height: 24px; transform: translateZ(12px); }
+        .head .back   { width: 32px; height: 24px; transform: rotateY(180deg) translateZ(12px); }
+        .head .left   { width: 24px; height: 24px; transform: rotateY(-90deg) translateZ(16px); left: 4px; }
+        .head .right  { width: 24px; height: 24px; transform: rotateY(90deg) translateZ(16px); left: 4px; }
+        .head .top    { width: 32px; height: 24px; transform: rotateX(90deg) translateZ(12px); }
+        .head .bottom { width: 32px; height: 24px; transform: rotateX(-90deg) translateZ(12px); }
+
+        /* Red glowing eyes: Minecraft Spider style */
+        .spider-eye {
+            position: absolute;
+            background: #ff003c;
+            box-shadow: 0 0 6px #ff476e;
+            border-radius: 1px;
+        }
+        /* Left main eye */
+        .head .front .eye-l-main {
+            left: 5px;
+            top: 9px;
+            width: 7px;
+            height: 6px;
+        }
+        /* Right main eye */
+        .head .front .eye-r-main {
+            right: 5px;
+            top: 9px;
+            width: 7px;
+            height: 6px;
+        }
+        /* Smaller side eyes */
+        .head .front .eye-l-sub1 { left: 14px; top: 7px; width: 3px; height: 3px; }
+        .head .front .eye-r-sub1 { right: 14px; top: 7px; width: 3px; height: 3px; }
+        .head .front .eye-l-sub2 { left: 4px; top: 16px; width: 4px; height: 3px; }
+        .head .front .eye-r-sub2 { right: 4px; top: 16px; width: 4px; height: 3px; }
+
+        /* Chelicerae/Mandibles */
+        .chelicera-l, .chelicera-r {
+            position: absolute;
+            width: 6px;
+            height: 10px;
+            background: #111215;
+            border: 1px solid rgba(0, 0, 0, 0.8);
+            top: 24px;
+        }
+        .chelicera-l { left: 8px; }
+        .chelicera-r { right: 8px; }
+
+        /* 3D Legs */
+        .leg {
+            position: absolute;
+            width: 0;
+            height: 0;
+            transform-style: preserve-3d;
+            /* Default transform values */
+            --rot-z: -22deg;
+            --rot-y: 0deg;
+            --rot-x: 0deg;
+            transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--rot-y)) rotateZ(var(--rot-z)) rotateX(var(--rot-x));
+            transform-origin: var(--origin);
+        }
+
+        .leg-box {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            transform-style: preserve-3d;
+            left: -4px;
+            top: -4px;
+        }
+        .leg-box .front  { width: 8px; height: 8px; transform: translateZ(35px); background: #18191c; }
+        .leg-box .back   { width: 8px; height: 8px; transform: rotateY(180deg) translateZ(35px); background: #121315; }
+        .leg-box .left   { width: 70px; height: 8px; transform: rotateY(-90deg) translateZ(4px); background: #141517; left: -31px; }
+        .leg-box .right  { width: 70px; height: 8px; transform: rotateY(90deg) translateZ(4px); background: #1c1d21; left: -31px; }
+        .leg-box .top    { width: 8px; height: 70px; transform: rotateX(90deg) translateZ(4px); background: #26272c; top: -31px; }
+        .leg-box .bottom { width: 8px; height: 70px; transform: rotateX(-90deg) translateZ(4px); background: #0c0c0e; top: -31px; }
+
+        /* Left Legs layout: L1, L2, L3, L4 */
+        .leg.l1 { --tx: -12px; --ty: 2px; --tz: 8px; --rot-y: -48deg; --origin: 100% 50% 0; }
+        .leg.l2 { --tx: -12px; --ty: 2px; --tz: 2px; --rot-y: -18deg; --origin: 100% 50% 0; }
+        .leg.l3 { --tx: -12px; --ty: 2px; --tz: -4px; --rot-y: 18deg; --origin: 100% 50% 0; }
+        .leg.l4 { --tx: -12px; --ty: 2px; --tz: -10px; --rot-y: 48deg; --origin: 100% 50% 0; }
+
+        /* Right Legs layout: R1, R2, R3, R4 (Z rotation is positive, origin is different) */
+        .leg.r1 { --tx: 12px; --ty: 2px; --tz: 8px; --rot-y: 48deg; --rot-z: 22deg; --origin: 0% 50% 0; }
+        .leg.r2 { --tx: 12px; --ty: 2px; --tz: 2px; --rot-y: 18deg; --rot-z: 22deg; --origin: 0% 50% 0; }
+        .leg.r3 { --tx: 12px; --ty: 2px; --tz: -4px; --rot-y: -18deg; --rot-z: 22deg; --origin: 0% 50% 0; }
+        .leg.r4 { --tx: 12px; --ty: 2px; --tz: -10px; --rot-y: -48deg; --rot-z: 22deg; --origin: 0% 50% 0; }
+
+        /* Leg Swing Keyframes (Walking) */
+        .spider-viewport.scanning .leg.cycle-a {
+            animation: mc-leg-walk-a 0.3s infinite alternate ease-in-out;
+        }
+        .spider-viewport.scanning .leg.cycle-b {
+            animation: mc-leg-walk-b 0.3s infinite alternate ease-in-out;
+        }
+        /* Right legs need separate cycle due to mirroring */
+        .spider-viewport.scanning .leg.cycle-a-right {
+            animation: mc-leg-walk-a-right 0.3s infinite alternate ease-in-out;
+        }
+        .spider-viewport.scanning .leg.cycle-b-right {
+            animation: mc-leg-walk-b-right 0.3s infinite alternate ease-in-out;
+        }
+
+        /* Left Side Walk Cycles */
+        @keyframes mc-leg-walk-a {
+            0%   { transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--rot-y)) rotateZ(-28deg) rotateX(-12deg); }
+            100% { transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--rot-y)) rotateZ(-16deg) rotateX(12deg); }
+        }
+        @keyframes mc-leg-walk-b {
+            0%   { transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--rot-y)) rotateZ(-16deg) rotateX(12deg); }
+            100% { transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--rot-y)) rotateZ(-28deg) rotateX(-12deg); }
+        }
+
+        /* Right Side Walk Cycles */
+        @keyframes mc-leg-walk-a-right {
+            0%   { transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--rot-y)) rotateZ(28deg) rotateX(-12deg); }
+            100% { transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--rot-y)) rotateZ(16deg) rotateX(12deg); }
+        }
+        @keyframes mc-leg-walk-b-right {
+            0%   { transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--rot-y)) rotateZ(16deg) rotateX(12deg); }
+            100% { transform: translate3d(var(--tx), var(--ty), var(--tz)) rotateY(var(--rot-y)) rotateZ(28deg) rotateX(-12deg); }
+        }
+
+        /* Active scanning body movement speed up */
+        .spider-viewport.scanning .mc-spider {
+            animation: mc-spider-bob-active 0.3s infinite alternate ease-in-out;
+        }
+        @keyframes mc-spider-bob-active {
+            0% { transform: translate3d(0, 3px, 0) rotateX(-20deg) rotateY(-38deg) rotateZ(-2deg); }
+            100% { transform: translate3d(0, -3px, 0) rotateX(-16deg) rotateY(-32deg) rotateZ(2deg); }
+        }
     </style>
 </head>
 <body>
@@ -1191,6 +1564,167 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 <button class="refresh-btn" onclick="loadAllData()">Refresh Dashboard</button>
             </div>
         </header>
+
+        <!-- Active Scan Progress Monitor -->
+        <section class="scan-monitor-panel">
+            <div class="scan-status-board">
+                <div class="scan-status-title">
+                    <span>Validation & Penetration Testing Scans</span>
+                    <span id="scan-global-status" style="font-size: 0.85rem; font-weight: normal; color: var(--text-secondary);">Initializing...</span>
+                </div>
+                <div class="scan-status-list">
+                    <div class="scan-status-item">
+                        <span class="scan-name">PHPUnit Quality Suite</span>
+                        <span id="scan-status-phpunit" class="scan-badge pending">Pending</span>
+                    </div>
+                    <div class="scan-status-item">
+                        <span class="scan-name">Larastan Static Scan (SAST)</span>
+                        <span id="scan-status-larastan" class="scan-badge pending">Pending</span>
+                    </div>
+                    <div class="scan-status-item">
+                        <span class="scan-name">Software Dependencies (SCA)</span>
+                        <span id="scan-status-sca" class="scan-badge pending">Pending</span>
+                    </div>
+                    <div class="scan-status-item">
+                        <span class="scan-name">Laravel Endpoint Discovery</span>
+                        <span id="scan-status-routes" class="scan-badge pending">Pending</span>
+                    </div>
+                    <div class="scan-status-item">
+                        <span class="scan-name">Native Boundary Prober</span>
+                        <span id="scan-status-native" class="scan-badge pending">Pending</span>
+                    </div>
+                    <div class="scan-status-item">
+                        <span class="scan-name">OWASP ZAP Dynamic Audit</span>
+                        <span id="scan-status-zap" class="scan-badge pending">Pending</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 3D Minecraft Spider Viewport -->
+            <div class="spider-viewport" id="spider-viewport">
+                <div class="mc-spider">
+                    <!-- Abdomen -->
+                    <div class="cube abdomen">
+                        <div class="face front"></div>
+                        <div class="face back"></div>
+                        <div class="face left"></div>
+                        <div class="face right"></div>
+                        <div class="face top"></div>
+                        <div class="face bottom"></div>
+                    </div>
+                    <!-- Thorax -->
+                    <div class="cube thorax">
+                        <div class="face front"></div>
+                        <div class="face back"></div>
+                        <div class="face left"></div>
+                        <div class="face right"></div>
+                        <div class="face top"></div>
+                        <div class="face bottom"></div>
+                    </div>
+                    <!-- Head -->
+                    <div class="cube head">
+                        <div class="face front">
+                            <div class="spider-eye eye-l-main"></div>
+                            <div class="spider-eye eye-r-main"></div>
+                            <div class="spider-eye eye-l-sub1"></div>
+                            <div class="spider-eye eye-r-sub1"></div>
+                            <div class="spider-eye eye-l-sub2"></div>
+                            <div class="spider-eye eye-r-sub2"></div>
+                            <div class="chelicera-l"></div>
+                            <div class="chelicera-r"></div>
+                        </div>
+                        <div class="face back"></div>
+                        <div class="face left"></div>
+                        <div class="face right"></div>
+                        <div class="face top"></div>
+                        <div class="face bottom"></div>
+                    </div>
+                    <!-- Legs Left -->
+                    <div class="leg l1 cycle-a">
+                        <div class="cube leg-box">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                    </div>
+                    <div class="leg l2 cycle-b">
+                        <div class="cube leg-box">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                    </div>
+                    <div class="leg l3 cycle-a">
+                        <div class="cube leg-box">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                    </div>
+                    <div class="leg l4 cycle-b">
+                        <div class="cube leg-box">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                    </div>
+                    <!-- Legs Right -->
+                    <div class="leg r1 cycle-b-right">
+                        <div class="cube leg-box">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                    </div>
+                    <div class="leg r2 cycle-a-right">
+                        <div class="cube leg-box">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                    </div>
+                    <div class="leg r3 cycle-b-right">
+                        <div class="cube leg-box">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                    </div>
+                    <div class="leg r4 cycle-a-right">
+                        <div class="cube leg-box">
+                            <div class="face front"></div>
+                            <div class="face back"></div>
+                            <div class="face left"></div>
+                            <div class="face right"></div>
+                            <div class="face top"></div>
+                            <div class="face bottom"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="spider-label" id="spider-state-label">Pentesting target boundaries...</div>
+            </div>
+        </section>
 
         <!-- Executive Security Summary Section -->
         <section class="executive-panel">
@@ -2354,8 +2888,67 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 .replace(/'/g, "&#039;");
         }
 
+        // Status Polling & Spider Animation Controller
+        let pollInterval = null;
+
+        async function pollScanStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const statusMap = await response.json();
+                
+                let anyActive = false;
+                let keys = Object.keys(statusMap);
+                
+                keys.forEach(key => {
+                    const badge = document.getElementById('scan-status-' + key);
+                    if (badge) {
+                        const currentStatus = statusMap[key];
+                        badge.innerText = currentStatus;
+                        badge.className = 'scan-badge ' + currentStatus;
+                        
+                        if (currentStatus === 'running' || currentStatus === 'pending') {
+                            anyActive = true;
+                        }
+                    }
+                });
+
+                const viewport = document.getElementById('spider-viewport');
+                const label = document.getElementById('spider-state-label');
+                const globalStatus = document.getElementById('scan-global-status');
+
+                if (anyActive) {
+                    viewport.classList.add('scanning');
+                    label.innerText = 'Spider is crawling boundaries...';
+                    globalStatus.innerText = 'Scans are actively executing';
+                } else {
+                    viewport.classList.remove('scanning');
+                    label.innerText = 'Scan Complete. Spider is resting.';
+                    globalStatus.innerText = 'All verification scans completed';
+                    
+                    // Stop polling once everything is done
+                    if (pollInterval) {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+                    }
+                    
+                    // Reload all dashboard tables and scores once to reflect newly generated reports
+                    loadAllData();
+                }
+            } catch (e) {
+                console.error("Error polling scan status:", e);
+            }
+        }
+
+        function startPolling() {
+            pollScanStatus();
+            pollInterval = setInterval(pollScanStatus, 1500);
+        }
+
         // Initialize
-        window.onload = loadAllData;
+        window.onload = function() {
+            loadAllData();
+            startPolling();
+        };
     </script>
 </body>
 </html>
