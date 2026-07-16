@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\DocumentAiAnalysis;
 use App\Services\VertexDocumentAnalysisService;
+use App\Services\LocalDocumentAnalysisService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -19,7 +20,7 @@ class AnalyzeRikmsDocument implements ShouldQueue
 
     public int $tries = 3;
 
-    public int $timeout = 120;
+    public int $timeout = 300;
 
     public function __construct(public readonly int $analysisId) {}
 
@@ -33,7 +34,7 @@ class AnalyzeRikmsDocument implements ShouldQueue
         return [15, 60, 180];
     }
 
-    public function handle(VertexDocumentAnalysisService $vertex): void
+    public function handle(): void
     {
         $analysis = DocumentAiAnalysis::query()->with('document')->findOrFail($this->analysisId);
         if (in_array($analysis->status, ['completed', 'reviewed'], true)) {
@@ -48,8 +49,20 @@ class AnalyzeRikmsDocument implements ShouldQueue
         ]);
 
         try {
-            $result = $vertex->analyze($analysis->document);
+            // Dynamically resolve service depending on configuration
+            $provider = env('RIKMS_AI_PROVIDER', 'local');
+
+            if ($provider === 'local') {
+                $analyzer = app(LocalDocumentAnalysisService::class);
+            } else {
+                $analyzer = app(VertexDocumentAnalysisService::class);
+            }
+
+            // Call the resolved analysis engine (they share the same return contract)
+            $result = $analyzer->analyze($analysis->document);
+
             $suggestions = $result['suggestions'];
+
             $analysis->update([
                 'status' => 'completed',
                 'suggestions' => $suggestions,
@@ -65,9 +78,10 @@ class AnalyzeRikmsDocument implements ShouldQueue
             $analysis->update([
                 'status' => 'failed',
                 'error_code' => class_basename($exception),
-                'error_message' => 'Analysis failed without changing the document. Retry after checking the AI service configuration.',
+                'error_message' => 'Analysis failed. Check local service configuration.',
                 'completed_at' => now(),
             ]);
+
             Log::warning('RIKMS AI analysis failed.', [
                 'analysis_id' => $analysis->id,
                 'document_id' => $analysis->document_id,

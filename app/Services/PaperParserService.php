@@ -17,7 +17,7 @@ class PaperParserService
     {
         $this->mineruEnvPath = env('MINERU_ENV_PATH', '/home/usepobrero_user575/mineru_env/bin/mineru');
         $this->ollamaUrl = env('OLLAMA_URL', 'http://localhost:11434');
-        $this->ollamaModel = env('OLLAMA_MODEL', 'qwen3.5:4b');
+        $this->ollamaModel = env('OLLAMA_MODEL', 'gemma4:e2b');
     }
 
     /**
