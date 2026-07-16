@@ -218,7 +218,7 @@ export function ResearchMetadata() {
             "category",
             ...(suggestedSdgs.length ? ["suggested_sdgs"] : []),
         ]);
-        toast.success("Gemini filled the editable metadata draft. Review it before saving.");
+        toast.success("AI Assistance filled the editable metadata draft. Review it before saving.");
     }, [aiAnalysis.data?.data, autoApplyAi, detail.data?.data.id, initializedId]);
 
     function update<K extends keyof MetadataForm>(key: K, value: MetadataForm[K]) {
@@ -269,7 +269,7 @@ export function ResearchMetadata() {
         setSaveError("");
         try {
             await apiPost(`/api/rikms/agency/documents/${id}/ai-analysis`);
-            toast.success("Gemini document analysis queued.");
+            toast.success("AI Assistance document analysis queued.");
             await aiAnalysis.refresh();
         } catch (error) {
             const message = firstValidationError(error);
@@ -455,7 +455,7 @@ export function ResearchMetadata() {
                     </div>
                     <p className="mt-1 text-sm text-gray-500">
                         {fromUpload
-                            ? "Gemini is extracting suggestions into this editable draft. Review before saving."
+                            ? "AI Assistance is extracting suggestions into this editable draft. Review before saving."
                             : "Edit structured metadata, public visibility, and SDG classification."}
                     </p>
                 </div>
@@ -531,10 +531,10 @@ export function ResearchMetadata() {
                             <Brain className="h-5 w-5" />
                         </span>
                         <div>
-                            <h2 className="font-semibold text-[#1E3A8A]">Gemini metadata assistance</h2>
+                            <h2 className="font-semibold text-[#1E3A8A]">AI Assistance metadata</h2>
                             <p className="mt-1 text-xs text-gray-500">
-                                Gemini 3.1 Flash-Lite produces reviewable suggestions. It cannot publish,
-                                submit, or change access permissions.
+                                gemma2:2b produces reviewable suggestions. It cannot publish, submit, or
+                                change access permissions.
                             </p>
                         </div>
                     </div>
@@ -579,9 +579,31 @@ export function ResearchMetadata() {
                                 </span>
                             )}
                         </div>
+                        {aiAnalysis.data.data.needsOcr &&
+                            (aiAnalysis.data.data.status === "completed" ||
+                                aiAnalysis.data.data.status === "reviewed") && (
+                                <p className="mt-2 flex items-center gap-1.5 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+                                    <span>🔍</span>
+                                    <span>
+                                        OCR was used — the PDF contained only scanned images. Results may
+                                        vary.
+                                    </span>
+                                </p>
+                            )}
                         {(aiAnalysis.data.data.status === "queued" ||
                             aiAnalysis.data.data.status === "processing") && (
-                            <p className="mt-2 text-purple-800">Processing safely in the background…</p>
+                            <div className="mt-2 space-y-1.5">
+                                <p className="text-purple-800">Processing safely in the background…</p>
+                                {aiAnalysis.data.data.needsOcr && (
+                                    <p className="flex items-center gap-1.5 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+                                        <span className="text-base">⏳</span>
+                                        <span>
+                                            <strong>OCR detected —</strong> this PDF contains only scanned
+                                            images. Text recognition may take several extra minutes.
+                                        </span>
+                                    </p>
+                                )}
+                            </div>
                         )}
                         {aiAnalysis.data.data.status === "failed" && (
                             <p className="mt-2 text-red-700">{aiAnalysis.data.data.errorMessage}</p>

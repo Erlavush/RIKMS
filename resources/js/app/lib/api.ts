@@ -140,6 +140,7 @@ export interface DocumentAiAnalysis {
     model: string;
     promptVersion: string;
     extractionMethod: string | null;
+    needsOcr: boolean;
     suggestions: AiDocumentSuggestions | null;
     acceptedFields: string[];
     confidence: number | null;

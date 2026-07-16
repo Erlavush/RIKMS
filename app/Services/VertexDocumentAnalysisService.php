@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use RuntimeException;
 
-class VertexDocumentAnalysisService
+class VertexDocumentAnalysisService implements DocumentAnalysisDriver
 {
     public function __construct(
         private readonly GoogleCloudAccessTokenProvider $tokens,
@@ -113,7 +113,7 @@ class VertexDocumentAnalysisService
     private function analysisInstruction(): string
     {
         return <<<'PROMPT'
-Analyze this research document for a human reviewer. Extract only claims supported by the document. Preserve official titles and author spelling. Summaries must be faithful, concise, and free from recommendations not grounded in the source. For every suggested SDG, provide a short evidence-based reason and a confidence from 0 to 1. Evidence pages must contain only page numbers actually supporting the extraction.
+Analyze this research document for a human reviewer. Extract only claims supported by the document. Preserve official titles and author spelling. Do not summarize, reword, or paraphrase the text. For sections like the abstract, methodology, review of related literature, theoretical framework, results and discussion, executive summary, and recommendations, you must copy and paste the exact text verbatim from the document where those parts actually are. For every suggested SDG, provide a short evidence-based reason and a confidence from 0 to 1. Evidence pages must contain only page numbers actually supporting the extraction.
 PROMPT;
     }
 

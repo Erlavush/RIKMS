@@ -7,6 +7,7 @@ use App\Models\Document;
 use App\Models\DocumentAiAnalysis;
 use App\Models\User;
 use App\Support\DocumentStorage;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use RuntimeException;
@@ -31,18 +32,51 @@ class DocumentAiAnalysisService
             return $active;
         }
 
+        // ── Pre-flight OCR detection via the Docling server ────────────────
+        // We call /detect now (before queuing) so the needs_ocr flag is
+        // immediately visible in the API response and the UI can warn the
+        // user before the job even starts.
+        $needsOcr = false;
+        if (config('rikms.ai.provider') === 'ollama') {
+            $needsOcr = $this->detectNeedsOcr(
+                Storage::disk(DocumentStorage::disk())->path($document->file_path)
+            );
+        }
+
         $analysis = DocumentAiAnalysis::query()->create([
-            'document_id' => $document->id,
+            'document_id'  => $document->id,
             'requested_by' => $requester?->id,
-            'status' => 'queued',
-            'model' => (string) config('rikms.ai.model'),
+            'status'       => 'queued',
+            'needs_ocr'    => $needsOcr,
+            'model'        => config('rikms.ai.provider') === 'ollama'
+                ? config('rikms.ai.ollama.model', 'gemma2:2b')
+                : config('rikms.ai.model', 'gemini-3.1-flash-lite'),
             'prompt_version' => (string) config('rikms.ai.prompt_version'),
-            'source_hash' => $this->sourceHash($document),
+            'source_hash'    => $this->sourceHash($document),
         ]);
 
         AnalyzeRikmsDocument::dispatch($analysis->id)->onQueue('ai');
 
         return $analysis;
+    }
+
+    /**
+     * Fast pre-flight: ask the Docling server if the PDF is image-only.
+     * Uses POST /detect which runs in milliseconds (pypdf inspection, no GPU).
+     * Returns false if the Docling server is unreachable so the job still runs.
+     */
+    private function detectNeedsOcr(string $pdfPath): bool
+    {
+        $base = rtrim((string) config('rikms.ai.docling.base_url', 'http://127.0.0.1:5001'), '/');
+        try {
+            $response = Http::timeout(5)->post("{$base}/detect", ['file' => $pdfPath]);
+            if ($response->successful()) {
+                return (bool) $response->json('needs_ocr', false);
+            }
+        } catch (\Throwable) {
+            // Docling server may not be running yet; the job itself will re-detect.
+        }
+        return false;
     }
 
     /** @return array<string, mixed>|null */
@@ -61,25 +95,26 @@ class DocumentAiAnalysisService
     public function present(DocumentAiAnalysis $analysis): array
     {
         return [
-            'id' => $analysis->id,
-            'status' => $analysis->status,
-            'model' => $analysis->model,
-            'promptVersion' => $analysis->prompt_version,
+            'id'              => $analysis->id,
+            'status'          => $analysis->status,
+            'model'           => $analysis->model,
+            'promptVersion'   => $analysis->prompt_version,
             'extractionMethod' => $analysis->extraction_method,
-            'suggestions' => $analysis->suggestions,
-            'acceptedFields' => $analysis->accepted_fields ?? [],
-            'confidence' => $analysis->confidence,
-            'inputTokens' => $analysis->input_tokens,
-            'outputTokens' => $analysis->output_tokens,
+            'needsOcr'        => (bool) $analysis->needs_ocr,
+            'suggestions'     => $analysis->suggestions,
+            'acceptedFields'  => $analysis->accepted_fields ?? [],
+            'confidence'      => $analysis->confidence,
+            'inputTokens'     => $analysis->input_tokens,
+            'outputTokens'    => $analysis->output_tokens,
             'reasoningTokens' => $analysis->reasoning_tokens,
             'estimatedCostUsd' => $analysis->estimated_cost_usd,
-            'errorMessage' => $analysis->error_message,
-            'requestedBy' => $analysis->requester?->name,
-            'reviewedBy' => $analysis->reviewer?->name,
-            'createdAt' => $analysis->created_at->toISOString(),
-            'startedAt' => $analysis->started_at?->toISOString(),
-            'completedAt' => $analysis->completed_at?->toISOString(),
-            'reviewedAt' => $analysis->reviewed_at?->toISOString(),
+            'errorMessage'    => $analysis->error_message,
+            'requestedBy'     => $analysis->requester?->name,
+            'reviewedBy'      => $analysis->reviewer?->name,
+            'createdAt'       => $analysis->created_at->toISOString(),
+            'startedAt'       => $analysis->started_at?->toISOString(),
+            'completedAt'     => $analysis->completed_at?->toISOString(),
+            'reviewedAt'      => $analysis->reviewed_at?->toISOString(),
         ];
     }
 

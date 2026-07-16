@@ -19,6 +19,10 @@ class DocumentTextExtractionService
     /** @return array{method: string, text: string}|null */
     public function extract(Document $document): ?array
     {
+        if (config('rikms.ai.provider') === 'ollama') {
+            return null;
+        }
+
         $embedded = $this->embeddedText($document);
         if ($embedded !== null) {
             return ['method' => 'embedded_pdf_text', 'text' => $embedded];

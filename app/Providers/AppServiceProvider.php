@@ -20,6 +20,13 @@ class AppServiceProvider extends ServiceProvider
         // RIKMS owns its authentication routes and uses only Fortify's vetted
         // TOTP provider, recovery-code primitives, and model trait.
         Fortify::ignoreRoutes();
+
+        $this->app->bind(\App\Services\DocumentAnalysisDriver::class, function ($app) {
+            if (config('rikms.ai.provider') === 'ollama') {
+                return $app->make(\App\Services\OllamaDocumentAnalysisService::class);
+            }
+            return $app->make(\App\Services\VertexDocumentAnalysisService::class);
+        });
     }
 
     /**

@@ -19,13 +19,13 @@ class AnalyzeRikmsDocument implements ShouldQueue
 
     public int $tries = 3;
 
-    public int $timeout = 120;
+    public int $timeout = 360;
 
     public function __construct(public readonly int $analysisId) {}
 
     public function middleware(): array
     {
-        return [(new WithoutOverlapping('rikms-ai-analysis-'.$this->analysisId))->expireAfter(180)];
+        return [(new WithoutOverlapping('rikms-ai-analysis-'.$this->analysisId))->expireAfter(360)];
     }
 
     public function backoff(): array
@@ -33,7 +33,7 @@ class AnalyzeRikmsDocument implements ShouldQueue
         return [15, 60, 180];
     }
 
-    public function handle(VertexDocumentAnalysisService $vertex): void
+    public function handle(\App\Services\DocumentAnalysisDriver $vertex): void
     {
         $analysis = DocumentAiAnalysis::query()->with('document')->findOrFail($this->analysisId);
         if (in_array($analysis->status, ['completed', 'reviewed'], true)) {
@@ -51,15 +51,16 @@ class AnalyzeRikmsDocument implements ShouldQueue
             $result = $vertex->analyze($analysis->document);
             $suggestions = $result['suggestions'];
             $analysis->update([
-                'status' => 'completed',
-                'suggestions' => $suggestions,
-                'confidence' => $suggestions['overall_confidence'] ?? null,
+                'status'            => 'completed',
+                'suggestions'       => $suggestions,
+                'confidence'        => $suggestions['overall_confidence'] ?? null,
                 'extraction_method' => $result['extraction_method'],
-                'input_tokens' => $result['input_tokens'],
-                'output_tokens' => $result['output_tokens'],
-                'reasoning_tokens' => $result['reasoning_tokens'],
+                'needs_ocr'         => (bool) ($result['needs_ocr'] ?? false),
+                'input_tokens'      => $result['input_tokens'],
+                'output_tokens'     => $result['output_tokens'],
+                'reasoning_tokens'  => $result['reasoning_tokens'],
                 'estimated_cost_usd' => $result['estimated_cost_usd'],
-                'completed_at' => now(),
+                'completed_at'      => now(),
             ]);
         } catch (Throwable $exception) {
             $analysis->update([

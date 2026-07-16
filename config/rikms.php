@@ -13,12 +13,21 @@ return [
 
     'ai' => [
         'enabled' => (bool) env('RIKMS_AI_ENABLED', false),
+        'provider' => env('RIKMS_AI_PROVIDER', 'vertex'),
+        'ollama' => [
+            'base_url' => env('OLLAMA_BASE_URL', 'http://127.0.0.1:11434'),
+            'model' => env('OLLAMA_MODEL', 'gemma2:2b'),
+            'python_path' => env('RIKMS_PYTHON_PATH', 'python'),
+        ],
+        'docling' => [
+            'base_url' => env('DOCLING_BASE_URL', 'http://127.0.0.1:5001'),
+        ],
         'auto_queue' => (bool) env('RIKMS_AI_AUTO_QUEUE', true),
         'project_id' => env('GOOGLE_CLOUD_PROJECT'),
         'location' => env('VERTEX_AI_LOCATION', 'global'),
         'model' => env('VERTEX_AI_MODEL', 'gemini-3.1-flash-lite'),
         'prompt_version' => env('RIKMS_AI_PROMPT_VERSION', 'rikms-metadata-v1'),
-        'timeout_seconds' => (int) env('RIKMS_AI_TIMEOUT_SECONDS', 100),
+        'timeout_seconds' => (int) env('RIKMS_AI_TIMEOUT_SECONDS', 300),
         'max_text_characters' => (int) env('RIKMS_AI_MAX_TEXT_CHARACTERS', 600000),
         'minimum_embedded_text_characters' => (int) env('RIKMS_AI_MIN_EMBEDDED_TEXT_CHARACTERS', 500),
         'documents_gcs_bucket' => env('DOCUMENTS_GCS_BUCKET'),

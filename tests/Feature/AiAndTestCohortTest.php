@@ -125,7 +125,7 @@ class AiAndTestCohortTest extends TestCase
 
     public function test_private_manifest_provisions_leader_and_dynamic_forced_rotation_accounts(): void
     {
-        $manifest = tempnam(sys_get_temp_dir(), 'rikms-cohort-');
+        $manifest = str_replace('\\', '/', tempnam(sys_get_temp_dir(), 'rikms-cohort-'));
         $payload = [
             'admin' => ['name' => 'Team Leader', 'email' => 'leader@gmail.com'],
             'testers' => collect(range(1, 12))->map(fn (int $index) => [
