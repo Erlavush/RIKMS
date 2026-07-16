@@ -73,7 +73,7 @@ PROMPT;
     }
 
     /** @param array<string, mixed> $suggestions @return array<string, mixed> */
-    public function validate(array $suggestions): array
+    public function validate(array $suggestions, ?string $extractionMethod = null): array
     {
         $unknown = array_diff(array_keys($suggestions), $this->fields());
         if ($unknown !== []) {
@@ -113,7 +113,14 @@ PROMPT;
             ]);
         }
 
-        return Arr::only($validator->validated(), $this->fields());
+        $validated = Arr::only($validator->validated(), $this->fields());
+        if (in_array($extractionMethod, ['local_docling_markdown', 'local_mineru_markdown'], true)) {
+            // Markdown preserves reading order but this adapter contract does not
+            // yet preserve reliable page provenance. Never accept invented pages.
+            $validated['evidence_pages'] = [];
+        }
+
+        return $validated;
     }
 
     /** @return list<string> */

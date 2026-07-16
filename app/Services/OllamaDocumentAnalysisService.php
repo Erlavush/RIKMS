@@ -75,7 +75,7 @@ class OllamaDocumentAnalysisService implements DocumentAnalysisProvider
         }
 
         return [
-            'suggestions' => $this->metadata->validate($suggestions),
+            'suggestions' => $this->metadata->validate($suggestions, $extracted['method']),
             'extraction_method' => $extracted['method'],
             'input_tokens' => (int) $response->json('prompt_eval_count', 0),
             'output_tokens' => (int) $response->json('eval_count', 0),

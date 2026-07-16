@@ -33,6 +33,19 @@ return [
         'local_ocr_max_pages' => (int) env('LOCAL_OCR_MAX_PAGES', 20),
         'local_ocr_dpi' => (int) env('LOCAL_OCR_DPI', 180),
         'local_ocr_page_timeout_seconds' => (int) env('LOCAL_OCR_PAGE_TIMEOUT_SECONDS', 15),
+        'local_extractor' => [
+            'driver' => env('LOCAL_DOCUMENT_EXTRACTOR', 'native'),
+            'timeout_seconds' => (int) env('LOCAL_STRUCTURED_EXTRACTOR_TIMEOUT_SECONDS', 90),
+            'max_pages' => (int) env('LOCAL_STRUCTURED_EXTRACTOR_MAX_PAGES', 20),
+            'max_output_bytes' => (int) env('LOCAL_STRUCTURED_EXTRACTOR_MAX_OUTPUT_BYTES', 2_500_000),
+            'docling' => [
+                'python_command' => env('DOCLING_PYTHON_COMMAND'),
+                'script' => base_path('scripts/docling_extract.py'),
+            ],
+            'mineru' => [
+                'command' => env('MINERU_COMMAND'),
+            ],
+        ],
         'documents_gcs_bucket' => env('DOCUMENTS_GCS_BUCKET'),
         'document_ai' => [
             'processor_id' => env('DOCUMENT_AI_PROCESSOR_ID'),

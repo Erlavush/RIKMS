@@ -69,7 +69,8 @@ class VertexDocumentAnalysisService implements DocumentAnalysisProvider
         if (! is_array($suggestions)) {
             throw new RuntimeException('Vertex AI returned an invalid structured response.');
         }
-        $suggestions = $this->metadata->validate($suggestions);
+        $extractionMethod = $extracted['method'] ?? 'gemini_pdf_understanding';
+        $suggestions = $this->metadata->validate($suggestions, $extractionMethod);
 
         $input = (int) $response->json('usageMetadata.promptTokenCount', 0);
         $output = (int) $response->json('usageMetadata.candidatesTokenCount', 0);
@@ -79,7 +80,7 @@ class VertexDocumentAnalysisService implements DocumentAnalysisProvider
 
         return [
             'suggestions' => $suggestions,
-            'extraction_method' => $extracted['method'] ?? 'gemini_pdf_understanding',
+            'extraction_method' => $extractionMethod,
             'input_tokens' => $input,
             'output_tokens' => $output,
             'reasoning_tokens' => $reasoning,
