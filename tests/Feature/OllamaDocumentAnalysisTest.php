@@ -106,6 +106,22 @@ class OllamaDocumentAnalysisTest extends TestCase
         $this->serviceWithText('Extractable research text')->analyze(new Document);
     }
 
+    public function test_page_unaware_markdown_extractor_cannot_claim_evidence_pages(): void
+    {
+        $suggestions = $this->validSuggestions();
+        Http::fake([
+            'http://127.0.0.1:11434/api/chat' => Http::response([
+                'message' => ['role' => 'assistant', 'content' => json_encode($suggestions, JSON_THROW_ON_ERROR)],
+            ]),
+        ]);
+
+        $result = $this->serviceWithText('Structured Markdown without page provenance.', 'local_docling_markdown')
+            ->analyze(new Document);
+
+        $this->assertSame([], $result['suggestions']['evidence_pages']);
+        $this->assertSame('local_docling_markdown', $result['extraction_method']);
+    }
+
     public function test_unknown_model_field_is_rejected_instead_of_silently_accepted(): void
     {
         $suggestions = $this->validSuggestions();
@@ -134,12 +150,12 @@ class OllamaDocumentAnalysisTest extends TestCase
         (new OllamaDocumentAnalysisService($extractor, new RikmsMetadataSchema))->analyze(new Document);
     }
 
-    private function serviceWithText(string $text): OllamaDocumentAnalysisService
+    private function serviceWithText(string $text, string $method = 'embedded_pdf_text'): OllamaDocumentAnalysisService
     {
         $this->configureOllama();
         $extractor = Mockery::mock(DocumentTextExtractionService::class);
         $extractor->shouldReceive('extract')->once()->andReturn([
-            'method' => 'embedded_pdf_text',
+            'method' => $method,
             'text' => $text,
         ]);
 

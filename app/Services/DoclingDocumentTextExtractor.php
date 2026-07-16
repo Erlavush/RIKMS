@@ -47,6 +47,7 @@ class DoclingDocumentTextExtractor implements LocalDocumentTextExtractor
                 '--output', $outputPath,
                 '--max-pages', (string) max(1, min(100, (int) config('rikms.ai.local_extractor.max_pages'))),
                 '--max-characters', (string) $this->maximumCharacters(),
+                '--max-file-bytes', (string) max(1024, (int) config('rikms.max_document_upload_kb') * 1024),
             ];
 
             if (! $this->processes->run($command, (int) config('rikms.ai.local_extractor.timeout_seconds'))) {

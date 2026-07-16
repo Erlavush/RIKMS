@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-pages", required=True, type=int)
     parser.add_argument("--max-characters", required=True, type=int)
+    parser.add_argument("--max-file-bytes", required=True, type=int)
     return parser.parse_args()
 
 
@@ -38,7 +39,7 @@ def validated_paths(arguments: argparse.Namespace) -> tuple[Path, Path]:
     return source, output
 
 
-def convert(source: Path, max_pages: int) -> tuple[str, int]:
+def convert(source: Path, max_pages: int, max_file_bytes: int) -> tuple[str, int]:
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import (
         AcceleratorDevice,
@@ -60,7 +61,11 @@ def convert(source: Path, max_pages: int) -> tuple[str, int]:
             InputFormat.PDF: PdfFormatOption(pipeline_options=options),
         }
     )
-    result = converter.convert(str(source), max_num_pages=max_pages)
+    result = converter.convert(
+        str(source),
+        max_num_pages=max_pages,
+        max_file_size=max_file_bytes,
+    )
     document = result.document
     markdown = document.export_to_markdown()
     page_count = len(getattr(document, "pages", {}) or {})
@@ -71,10 +76,11 @@ def main() -> int:
     arguments = parse_args()
     max_pages = max(1, min(100, arguments.max_pages))
     max_characters = max(1_000, min(600_000, arguments.max_characters))
+    max_file_bytes = max(1_024, min(100 * 1_024 * 1_024, arguments.max_file_bytes))
 
     try:
         source, output = validated_paths(arguments)
-        markdown, page_count = convert(source, max_pages)
+        markdown, page_count = convert(source, max_pages, max_file_bytes)
         payload = {
             "text": markdown[:max_characters],
             "page_count": min(max_pages, max(0, page_count)),

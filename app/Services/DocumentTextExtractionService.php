@@ -17,11 +17,18 @@ class DocumentTextExtractionService
 {
     public function __construct(
         private readonly GoogleCloudAccessTokenProvider $tokens,
+        private readonly DoclingDocumentTextExtractor $docling,
+        private readonly MineruDocumentTextExtractor $mineru,
     ) {}
 
     /** @return array{method: string, text: string}|null */
     public function extract(Document $document): ?array
     {
+        $structured = $this->localStructuredText($document);
+        if ($structured !== null) {
+            return $structured;
+        }
+
         $local = $this->localPdfText($document);
         if ($local !== null) {
             return ['method' => 'local_pdftotext', 'text' => $local];
@@ -39,6 +46,49 @@ class DocumentTextExtractionService
 
         if (config('rikms.ai.document_ai.processor_id')) {
             return ['method' => 'document_ai_ocr', 'text' => $this->documentAiText($document)];
+        }
+
+        return null;
+    }
+
+    /** @return array{method: string, text: string}|null */
+    private function localStructuredText(Document $document): ?array
+    {
+        $driver = strtolower(trim((string) config('rikms.ai.local_extractor.driver')));
+        if (! in_array($driver, ['native', 'auto', 'docling', 'mineru'], true)) {
+            throw new RuntimeException('Local document extractor must be native, auto, docling, or mineru.');
+        }
+        if ($driver === 'native') {
+            return null;
+        }
+        if (! app()->environment(['local', 'testing'])) {
+            throw new RuntimeException('Optional Docling and MinerU extractors are restricted to local development and testing.');
+        }
+
+        $path = Storage::disk(DocumentStorage::disk())->path((string) $document->file_path);
+        $extractors = match ($driver) {
+            'docling' => [$this->docling],
+            'mineru' => [$this->mineru],
+            default => [$this->docling, $this->mineru],
+        };
+
+        foreach ($extractors as $extractor) {
+            if (! $extractor->configured()) {
+                if ($driver !== 'auto') {
+                    throw new RuntimeException(ucfirst($extractor->key()).' is selected but its executable is not configured.');
+                }
+
+                continue;
+            }
+
+            $result = $extractor->extract($path);
+            if ($result !== null) {
+                return $result;
+            }
+
+            if ($driver !== 'auto') {
+                throw new RuntimeException(ucfirst($extractor->key()).' did not return reliable document text.');
+            }
         }
 
         return null;

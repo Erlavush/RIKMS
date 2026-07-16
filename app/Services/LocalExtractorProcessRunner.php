@@ -19,7 +19,6 @@ class LocalExtractorProcessRunner
         $timeout = max(1, min(600, $timeoutSeconds));
         $process = new Process($command);
         $process->setTimeout($timeout);
-        $process->setIdleTimeout($timeout);
         $process->disableOutput();
         $process->run();
 

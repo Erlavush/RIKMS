@@ -61,7 +61,11 @@ Build and operate RIKMS as a privacy-preserving research repository. Correct aut
 - The initial AI security lane targets loopback Ollama only. Cloud-model assessment is a later provider-adapter phase, not an excuse to bypass the local contract.
 - Align AI fixtures with the canonical RIKMS metadata schema, queue/safety gate, provenance and human-review flow. The model cannot publish, approve, authorize or mutate authoritative metadata.
 - Use synthetic fixtures for prompt injection, canary disclosure, conflicting metadata, invalid JSON, unsupported fields, fabricated evidence pages and resource limits. Do not commit private papers.
-- Julse's MinerU/Ollama concept may inform a future optional extractor, but do not merge unrelated branch artifacts or hard-coded machine paths. Benchmark and sandbox any extractor before adoption.
+- Mon's Docling and Julse's MinerU work are optional local text extractors behind `DocumentTextExtractionService`; `native` remains the default. Keep their linked authorship when changing their adapters.
+- Docling stays a one-shot repository wrapper, never an unauthenticated file-path HTTP service. MinerU stays extraction-only and must not add a second Ollama prompt/schema path.
+- Enhanced extractors use exact configured executables, argument arrays, private temporary directories, finite time/file/page/output limits where supported, and `finally` cleanup. Never retain generated Markdown or log paper/model content.
+- `auto` may fall through Docling, MinerU and the native chain. An explicitly selected unavailable extractor must fail honestly instead of silently claiming native or OCR success.
+- Benchmark optional extractors on approved synthetic papers before recommending them; a successful conversion is evidence collection, not proof of metadata correctness.
 
 ## Application security boundaries
 

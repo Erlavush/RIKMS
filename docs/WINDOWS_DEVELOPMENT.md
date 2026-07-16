@@ -57,7 +57,10 @@ The dashboard opens at `http://127.0.0.1:8888`; the RIKMS target remains at
 `http://127.0.0.1:8000`. See `docs/LOCAL_SECURITY_LAB.md` for scan modes,
 AI fixtures, target authorization and evidence handling.
 The application-side local provider and OCR setup are documented in
-`docs/LOCAL_AI_DEVELOPMENT.md`.
+`docs/LOCAL_AI_DEVELOPMENT.md`. That guide also documents Mon's optional
+Docling and Julse's optional MinerU adapters. Both use absolute Windows
+executable paths, remain disabled by default, and still require the ordinary
+`default,ai` queue worker; neither adds a second RIKMS website or weakens login.
 
 With the server running, a passive scan is:
 
