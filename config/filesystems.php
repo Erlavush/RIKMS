@@ -40,6 +40,14 @@ return [
             'report' => true,
         ],
 
+        'security-reports' => [
+            'driver' => 'local',
+            'root' => env('SECURITY_REPORTS_PATH') ?: storage_path('app/security'),
+            'serve' => false,
+            'throw' => true,
+            'report' => true,
+        ],
+
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),

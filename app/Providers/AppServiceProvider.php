@@ -2,8 +2,11 @@
 
 namespace App\Providers;
 
+use App\Events\DocumentSourceStored;
+use App\Jobs\ProcessDocumentJob;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\ServiceProvider;
@@ -27,6 +30,14 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        Event::listen(DocumentSourceStored::class, function (DocumentSourceStored $event): void {
+            if (! config('rikms.document_processing.auto_queue')) {
+                return;
+            }
+
+            ProcessDocumentJob::dispatch($event->documentId)->onQueue('default');
+        });
+
         PasswordRule::defaults(fn () => PasswordRule::min(14)->mixedCase()->letters()->numbers()->symbols());
 
         if ($this->app->environment('staging', 'production')) {
