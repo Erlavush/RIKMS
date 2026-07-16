@@ -28,6 +28,27 @@ Open `http://127.0.0.1:8000/login`. Local demo credentials are `test@example.com
 
 ## Authorized local security assessment
 
+Jaylord's visual security workbench is independent from the RIKMS web UI and
+does not require a RIKMS login to view:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\security-dashboard.ps1 -StartApp
+```
+
+To open it and explicitly refresh code, passive application and local Ollama
+evidence:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\security-dashboard.ps1 `
+  -StartApp -StartOllama -Code -Passive -AI
+```
+
+The dashboard opens at `http://127.0.0.1:8888`; the RIKMS target remains at
+`http://127.0.0.1:8000`. See `docs/LOCAL_SECURITY_LAB.md` for scan modes,
+AI fixtures, target authorization and evidence handling.
+The application-side local provider and OCR setup are documented in
+`docs/LOCAL_AI_DEVELOPMENT.md`.
+
 With the server running, a passive scan is:
 
 ```powershell
@@ -82,7 +103,8 @@ git push origin jaylord-edits
 git fetch origin
 git switch main
 git pull --ff-only origin main
-git switch -c jaylord-security-next
+git switch -c jaylord-edits-security2
+git push -u origin jaylord-edits-security2
 ```
 
 Use a new short-lived branch because the integrated `main` already contains Jaylord's earlier commits plus the reconciliation work. This preserves his GitHub authorship and avoids replaying the same 23 commits.

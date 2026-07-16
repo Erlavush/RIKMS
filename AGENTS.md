@@ -42,6 +42,25 @@ Build and operate RIKMS as a privacy-preserving research repository. Correct aut
 - Scanner output is an observation. Confirmed findings require manual reproduction, demonstrated impact, sanitized evidence, OWASP/CWE mapping, an owner, remediation, and retest state.
 - Store raw reports under private ignored storage or the private security-report bucket. The app API must never return raw report paths, cookies, authorization headers, CSRF tokens, signed grants, passwords, or personal data.
 
+### Jaylord's local security workbench
+
+- `python -m security.lab` is Jaylord's standalone developer dashboard. Keep it independent from Laravel routes and bind it to `127.0.0.1` only.
+- Preserve the Minecraft-inspired spider, the Tests/Larastan/ZAP/SCA/Native views, and Jaylord's authorship while improving their implementation behind stable report contracts.
+- Treat `security/lab/dashboard/jaylord-original.html` as the visual source of truth from Jaylord's `fd6b736` dashboard. Do not redesign its palette, typography, layout, radar animation, or spider geometry; extend it only in the same visual language.
+- The dashboard is viewable without a RIKMS login. Only authenticated test cases need synthetic accounts; never weaken RIKMS authentication to make the dashboard convenient.
+- No scan starts merely because the dashboard opens. Code, passive web/API, local AI, ZAP and active modes require explicit selection.
+- All scanner processes use argument arrays, `shell=False`, finite timeouts, bounded output, checked exit statuses and fresh private report paths.
+- Windows PowerShell is the primary teammate workflow. Keep `scripts/windows/security-dashboard.ps1` and `docs/LOCAL_SECURITY_LAB.md` synchronized with CLI changes.
+- Keep local run artifacts below ignored `storage/app/security/lab`. Never commit generated reports, captured responses, session material or real research documents.
+- Treat unavailable tools, blocked policy and malformed output as distinct non-passing states. Never convert missing evidence into an optimistic score.
+
+### Local metadata AI red team
+
+- The initial AI security lane targets loopback Ollama only. Cloud-model assessment is a later provider-adapter phase, not an excuse to bypass the local contract.
+- Align AI fixtures with the canonical RIKMS metadata schema, queue/safety gate, provenance and human-review flow. The model cannot publish, approve, authorize or mutate authoritative metadata.
+- Use synthetic fixtures for prompt injection, canary disclosure, conflicting metadata, invalid JSON, unsupported fields, fabricated evidence pages and resource limits. Do not commit private papers.
+- Julse's MinerU/Ollama concept may inform a future optional extractor, but do not merge unrelated branch artifacts or hard-coded machine paths. Benchmark and sandbox any extractor before adoption.
+
 ## Application security boundaries
 
 - Super administrators require a changed password and confirmed two-factor authentication.

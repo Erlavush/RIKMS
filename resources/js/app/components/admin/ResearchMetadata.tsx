@@ -218,7 +218,7 @@ export function ResearchMetadata() {
             "category",
             ...(suggestedSdgs.length ? ["suggested_sdgs"] : []),
         ]);
-        toast.success("Gemini filled the editable metadata draft. Review it before saving.");
+        toast.success("AI suggestions filled the editable metadata draft. Review them before saving.");
     }, [aiAnalysis.data?.data, autoApplyAi, detail.data?.data.id, initializedId]);
 
     function update<K extends keyof MetadataForm>(key: K, value: MetadataForm[K]) {
@@ -269,7 +269,7 @@ export function ResearchMetadata() {
         setSaveError("");
         try {
             await apiPost(`/api/rikms/agency/documents/${id}/ai-analysis`);
-            toast.success("Gemini document analysis queued.");
+            toast.success("Document analysis queued.");
             await aiAnalysis.refresh();
         } catch (error) {
             const message = firstValidationError(error);
@@ -455,7 +455,7 @@ export function ResearchMetadata() {
                     </div>
                     <p className="mt-1 text-sm text-gray-500">
                         {fromUpload
-                            ? "Gemini is extracting suggestions into this editable draft. Review before saving."
+                            ? "AI is extracting suggestions into this editable draft. Review before saving."
                             : "Edit structured metadata, public visibility, and SDG classification."}
                     </p>
                 </div>
@@ -531,10 +531,10 @@ export function ResearchMetadata() {
                             <Brain className="h-5 w-5" />
                         </span>
                         <div>
-                            <h2 className="font-semibold text-[#1E3A8A]">Gemini metadata assistance</h2>
+                            <h2 className="font-semibold text-[#1E3A8A]">AI metadata assistance</h2>
                             <p className="mt-1 text-xs text-gray-500">
-                                Gemini 3.1 Flash-Lite produces reviewable suggestions. It cannot publish,
-                                submit, or change access permissions.
+                                The configured model produces reviewable suggestions. It cannot publish,
+                                submit, or change access permissions. The active model appears below.
                             </p>
                         </div>
                     </div>

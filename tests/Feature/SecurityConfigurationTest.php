@@ -104,6 +104,8 @@ class SecurityConfigurationTest extends TestCase
         $this->assertStringContainsString('runs-on: windows-latest', $workflow);
         $this->assertFileExists(base_path('scripts/windows/setup-local.ps1'));
         $this->assertFileExists(base_path('scripts/windows/security-scan.ps1'));
+        $this->assertFileExists(base_path('scripts/windows/security-dashboard.ps1'));
         $this->assertFileExists(base_path('docs/WINDOWS_DEVELOPMENT.md'));
+        $this->assertFileExists(base_path('docs/LOCAL_SECURITY_LAB.md'));
     }
 }
