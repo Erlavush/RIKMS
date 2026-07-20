@@ -14,7 +14,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from safety import SafetyError, TargetPolicy, private_output_path
+try:
+    from security.safety import SafetyError, TargetPolicy, private_output_path
+except ImportError:
+    from safety import SafetyError, TargetPolicy, private_output_path
+
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +26,8 @@ USER_AGENT = "RIKMS-Authorized-Security-Scanner/1.0"
 
 
 class ScanClient:
-    def __init__(self, origin: str, timeout: float) -> None:
+    def __init__(self, origin: str, timeout: float = 10.0) -> None:
+
         self.origin = origin
         self.timeout = timeout
         self.cookies = http.cookiejar.CookieJar()
@@ -220,7 +225,34 @@ def active_authenticated_checks(client: ScanClient) -> tuple[list[dict[str, Any]
             f"Authenticated password-change request without X-XSRF-TOKEN returned HTTP {csrf_status}.",
             endpoint="/api/rikms/change-password", method="POST", owasp="A01:2021-Broken Access Control", cwe="CWE-352",
         ))
+
+    upload_status, _, _ = client.request(
+        "/api/rikms/documents",
+        method="POST",
+        data={"title": "Test", "file_name": "../../malicious_script.php"},
+        headers=headers,
+    )
+    upload_passed = upload_status in {400, 403, 419, 422, 404}
+    checks.append({"id": "UPLOAD-TRAVERSAL", "name": "Path traversal filename rejection", "passed": upload_passed, "status": upload_status})
+    if not upload_passed:
+        findings.append(finding(
+            "UPLOAD-TRAVERSAL", "Document upload endpoint did not reject path traversal filename", "critical",
+            f"Authenticated upload request with path traversal filename returned HTTP {upload_status}.",
+            endpoint="/api/rikms/documents", method="POST", owasp="A01:2021-Broken Access Control", cwe="CWE-22",
+        ))
+
+    download_status, _, _ = client.request("/api/rikms/documents/invalid-unauthorized-id/download")
+    download_passed = download_status in {403, 404}
+    checks.append({"id": "DOWNLOAD-IDOR", "name": "Unauthorized document download authorization check", "passed": download_passed, "status": download_status})
+    if not download_passed:
+        findings.append(finding(
+            "DOWNLOAD-IDOR", "Document download endpoint failed BOLA/IDOR boundary enforcement", "high",
+            f"Unauthorized document download request returned HTTP {download_status} instead of 403/404.",
+            endpoint="/api/rikms/documents/invalid-unauthorized-id/download", method="GET", owasp="A01:2021-Broken Access Control", cwe="CWE-639",
+        ))
+
     return findings, checks
+
 
 
 def write_report(path: Path, report: dict[str, Any]) -> None:

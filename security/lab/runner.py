@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+
 import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -19,9 +21,11 @@ CODE_TOOLS = ("phpunit", "larastan", "composer_audit", "npm_audit", "routes")
 SELECTION_TOOLS = {
     "code": CODE_TOOLS,
     "passive": ("native",),
+    "process": ("process_e2e",),
     "zap": ("zap",),
     "ai": ("ai_metadata",),
 }
+
 
 
 class SecurityLabRunner:
@@ -86,6 +90,7 @@ class SecurityLabRunner:
                     "npm_audit": "SCA",
                     "routes": "Attack surface",
                     "native": "Web/API",
+                    "process_e2e": "E2E Process",
                     "zap": "DAST",
                     "ai_metadata": "AI",
                 }[tool]
@@ -104,9 +109,11 @@ class SecurityLabRunner:
             "npm_audit": self._npm_audit,
             "routes": self._routes,
             "native": self._native,
+            "process_e2e": self._process_e2e,
             "zap": self._zap,
             "ai_metadata": self._ai_metadata,
         }
+
         for tool in report.tools:
             report.tools[tool].status = "running"
             report.tools[tool].started_at = utc_now()
@@ -474,7 +481,81 @@ class SecurityLabRunner:
             exit_code=process.exit_code, metrics=metrics, findings=findings, errors=errors,
         )
 
+    def _process_e2e(self) -> ToolResult:
+        output = self._current_tool_path("process_e2e.json")
+        started_at = utc_now()
+        email = os.getenv("RIKMS_SCAN_EMAIL", "").strip()
+        password = os.getenv("RIKMS_SCAN_PASSWORD", "")
+        if not email or not password:
+            return ToolResult(
+                tool="process_e2e",
+                category="E2E Process",
+                status="blocked",
+                summary="Active process security scan requires RIKMS_SCAN_EMAIL and RIKMS_SCAN_PASSWORD",
+                started_at=started_at,
+                completed_at=utc_now(),
+                errors=["Active process security checks require synthetic credentials in environment variables."],
+            )
+
+        try:
+            self.config.authorize_target("active")
+        except SafetyError as error:
+            return ToolResult(
+                tool="process_e2e",
+                category="E2E Process",
+                status="blocked",
+                summary="Target policy refused active process security scan",
+                started_at=started_at,
+                completed_at=utc_now(),
+                errors=[str(error)],
+            )
+
+        process = self.processes.run(
+            [
+                sys.executable,
+                str(self.config.project_root / "security" / "e2e_process_security.py"),
+                f"--target={self.config.target}",
+                f"--environment={self.config.environment}",
+                f"--email={email}",
+                f"--password={password}",
+                f"--output={output}",
+            ],
+            timeout=900,
+        )
+
+        metrics: dict[str, Any] = {}
+        findings: list[dict[str, Any]] = []
+        errors = [item for item in (process.error, (process.stderr or process.stdout).strip()[-1200:] or None) if item]
+        if output.is_file():
+            try:
+                payload = json.loads(output.read_text(encoding="utf-8"))
+                metrics = {
+                    "checks": payload.get("checks_count", 0),
+                    "passed": sum(1 for c in payload.get("checks", []) if c.get("passed")),
+                    "findings": payload.get("findings_count", 0),
+                }
+                findings = payload.get("findings", [])
+            except (OSError, json.JSONDecodeError) as error:
+                errors.append(f"Process security report parsing error: {error}")
+
+        status = "passed" if process.exit_code == 0 else "failed"
+        summary = "Process-specific security checks passed" if status == "passed" else "Process security observations require review"
+        return ToolResult(
+            tool="process_e2e",
+            category="E2E Process",
+            status=status,
+            summary=summary,
+            started_at=started_at,
+            completed_at=utc_now(),
+            duration_ms=process.duration_ms,
+            exit_code=process.exit_code,
+            metrics=metrics,
+            findings=findings,
+            errors=errors,
+        )
+
     def _ai_metadata(self) -> ToolResult:
+
         return run_ai_metadata_scan(
             self.config.project_root / "security" / "fixtures" / "ai",
             self.config.ai_url,

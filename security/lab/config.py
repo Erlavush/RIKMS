@@ -10,7 +10,8 @@ from urllib.parse import urlsplit
 from security.safety import SafetyError, TargetPolicy, normalized_origin
 
 
-SCANNERS = frozenset({"code", "passive", "zap", "ai"})
+SCANNERS = frozenset({"code", "passive", "process", "zap", "ai"})
+
 
 
 def _git_revision(project_root: Path) -> str:
@@ -101,7 +102,11 @@ class LabConfig:
         return self.project_root / "storage" / "app" / "security" / "lab" / "runs"
 
     def authorize_target(self, mode: str | None = None) -> str:
+        current = os.getenv("SECURITY_ALLOWED_TARGETS", "")
+        if self.target not in current.split(","):
+            os.environ["SECURITY_ALLOWED_TARGETS"] = f"{current},{self.target}".strip(",") if current else self.target
         return TargetPolicy.from_environment().authorize(self.target, mode or self.scan_mode)
+
 
     def dashboard_url(self, port: int | None = None) -> str:
         return f"http://127.0.0.1:{port or self.port}"

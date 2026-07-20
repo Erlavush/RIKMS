@@ -275,6 +275,35 @@ class SecurityLabTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=3)
 
+    @patch.dict(os.environ, {"RIKMS_SCAN_EMAIL": "test@example.com", "RIKMS_SCAN_PASSWORD": "secret_password"})
+    def test_active_authenticated_checks_runs_upload_and_download_boundary_tests(self) -> None:
+        from security.rikms_security_scan import ScanClient, active_authenticated_checks
+
+        with patch.object(ScanClient, "request") as mock_request:
+            mock_request.side_effect = [
+                (200, {}, b""),
+                (200, {}, b""),
+                (200, {}, b'{"data": {"role": "agency_admin"}}'),
+                (403, {}, b""),
+                (419, {}, b""),
+                (422, {}, b""),
+                (403, {}, b""),
+            ]
+
+            client = ScanClient("http://127.0.0.1:8000")
+            findings, checks = active_authenticated_checks(client)
+
+            check_ids = [c["id"] for c in checks]
+            self.assertIn("AUTH-LOGIN", check_ids)
+            self.assertIn("AUTH-ROLE", check_ids)
+            self.assertIn("CSRF-001", check_ids)
+            self.assertIn("UPLOAD-TRAVERSAL", check_ids)
+            self.assertIn("DOWNLOAD-IDOR", check_ids)
+
+            self.assertEqual([], findings)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

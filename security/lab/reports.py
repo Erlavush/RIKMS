@@ -145,3 +145,43 @@ class RunStore:
                 path.chmod(0o600)
             except PermissionError:
                 pass
+
+            if report.status in FINAL_STATUSES:
+                self._export_iteration_log(report)
+
+    def _export_iteration_log(self, report: RunReport) -> Path:
+        logs_dir = self.root.parent / "test_logs"
+        logs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        existing = list(logs_dir.glob("test_log_*.txt"))
+        next_index = len(existing) + 1
+        log_filename = f"test_log_{next_index:02d}.txt"
+        log_path = logs_dir / log_filename
+
+        lines = [
+            "=" * 72,
+            f"  RIKMS SECURITY WORKBENCH - TEST RUN LOG ({log_filename})",
+            "=" * 72,
+            f"Run ID:         {report.run_id}",
+            f"Created At:     {report.created_at}",
+            f"Target:         {report.target}",
+            f"Environment:    {report.environment}",
+            f"Mode:           {report.mode}",
+            f"Overall Status: {report.status.upper()}",
+            "-" * 72,
+            "SCANNER RESULTS SUMMARY:",
+            "-" * 72,
+        ]
+        for name, tool in report.tools.items():
+            lines.append(f"- {tool.category} ({name}): {tool.status.upper()} - {tool.summary}")
+            if tool.findings:
+                lines.append(f"  Findings ({len(tool.findings)}):")
+                for f in tool.findings[:5]:
+                    lines.append(f"    * [{f.get('severity', 'info').upper()}] {f.get('title', f.get('id', 'Observation'))}: {f.get('observed', '')}")
+            if tool.errors:
+                lines.append(f"  Errors:")
+                for e in tool.errors[:3]:
+                    lines.append(f"    * {e}")
+        lines.append("=" * 72 + "\n")
+        log_path.write_text("\n".join(lines), encoding="utf-8")
+        return log_path
+

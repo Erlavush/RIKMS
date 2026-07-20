@@ -63,12 +63,19 @@ try {
     if ($View -and ($Code -or $Passive -or $AI -or $Zap)) {
         throw "-View opens the dashboard without an initial scan. Remove -View or remove the scan switches."
     }
-    if (-not $env:SECURITY_ALLOWED_TARGETS -and $Environment -eq "local") {
-        $env:SECURITY_ALLOWED_TARGETS = "http://127.0.0.1:8000,http://localhost:8000"
+    if ($Target) {
+        $normalizedTarget = $Target.TrimEnd('/')
+        if (-not $env:SECURITY_ALLOWED_TARGETS) {
+            $env:SECURITY_ALLOWED_TARGETS = "$normalizedTarget,http://127.0.0.1:8000,http://localhost:8000"
+        }
+        elseif ($env:SECURITY_ALLOWED_TARGETS -notlike "*$normalizedTarget*") {
+            $env:SECURITY_ALLOWED_TARGETS = "$env:SECURITY_ALLOWED_TARGETS,$normalizedTarget"
+        }
     }
     if ($Active) {
         $env:SECURITY_ACTIVE_SCAN_ENABLED = "true"
     }
+
 
     if ($StartApp) {
         if (Test-TcpPort -HostName "127.0.0.1" -PortNumber 8000) {

@@ -446,7 +446,8 @@ function configureInteractions() {
     feedback.id = "core-feedback";
     feedback.className = "run-feedback";
     core.after(feedback);
-    core.addEventListener("click", () => startRun(["code", "passive"], "core-feedback"));
+    core.addEventListener("click", () => startRun(["code", "passive", "process", "zap", "ai"], "core-feedback"));
+
   }
   byId("run-ai")?.addEventListener("click", () => startRun(["ai"], "run-feedback"));
 

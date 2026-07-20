@@ -39,7 +39,8 @@ class DoclingDocumentTextExtractorTest extends TestCase
         $runner = Mockery::mock(LocalExtractorProcessRunner::class);
         $runner->shouldReceive('run')->once()->withArgs(function (array $command, int $timeout) use (&$workingDirectory): bool {
             $this->assertSame(PHP_BINARY, $command[0]);
-            $this->assertSame(base_path('scripts/docling_extract.py'), $command[1]);
+            $this->assertSame(realpath(base_path('scripts/docling_extract.py')), $command[1]);
+
             $this->assertSame($this->source, $command[array_search('--input', $command, true) + 1]);
             $this->assertSame(30, $timeout);
 

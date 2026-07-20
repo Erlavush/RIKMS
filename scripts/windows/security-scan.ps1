@@ -16,9 +16,14 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Push-Location $repoRoot
 
 try {
+    $normalizedTarget = $Target.TrimEnd('/')
     if (-not $env:SECURITY_ALLOWED_TARGETS) {
-        $env:SECURITY_ALLOWED_TARGETS = "http://127.0.0.1:8000,http://localhost:8000"
+        $env:SECURITY_ALLOWED_TARGETS = "$normalizedTarget,http://127.0.0.1:8000,http://localhost:8000"
     }
+    elseif ($env:SECURITY_ALLOWED_TARGETS -notlike "*$normalizedTarget*") {
+        $env:SECURITY_ALLOWED_TARGETS = "$env:SECURITY_ALLOWED_TARGETS,$normalizedTarget"
+    }
+
     if (-not $Revision) {
         $Revision = (& git rev-parse HEAD).Trim()
         if ($LASTEXITCODE -ne 0) { throw "Git revision detection failed." }
